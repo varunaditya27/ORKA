@@ -139,6 +139,15 @@ internal fun buildDiagnosticsWarnings(
     if (readiness is RlReadiness.NotReady) add(readiness.reason)
 }
 
+internal fun requiresOemAction(manufacturer: String): Boolean {
+    val normalized = manufacturer.trim().lowercase()
+    return normalized.contains("xiaomi") ||
+        normalized.contains("realme") ||
+        normalized.contains("oppo") ||
+        normalized.contains("oneplus") ||
+        normalized.contains("oplus")
+}
+
 private fun capabilityState(
     context: Context,
     alarmManager: AlarmManager,
@@ -148,8 +157,7 @@ private fun capabilityState(
     if (!notificationManager.areNotificationsEnabled()) return AlarmCapabilityState.NOTIFICATION_BLOCKED
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) return AlarmCapabilityState.BATTERY_OPTIMIZATION_ENABLED
-    val manufacturer = android.os.Build.MANUFACTURER.lowercase()
-    return if (manufacturer.contains("xiaomi") || manufacturer.contains("realme") || manufacturer.contains("oppo")) {
+    return if (requiresOemAction(android.os.Build.MANUFACTURER)) {
         AlarmCapabilityState.OEM_ACTION_REQUIRED
     } else {
         AlarmCapabilityState.READY

@@ -62,4 +62,15 @@ class DiagnosticsAggregationTest {
 
         assertThat(warnings).isEmpty()
     }
+
+    @Test
+    fun marksOnePlusAsOemActionRequiredManufacturer() {
+        assertThat(requiresOemAction("OnePlus")).isTrue()
+        assertThat(requiresOemAction("OPLUS")).isTrue()
+    }
+
+    @Test
+    fun ignoresPixelManufacturerForOemActionRequirement() {
+        assertThat(requiresOemAction("Google")).isFalse()
+    }
 }

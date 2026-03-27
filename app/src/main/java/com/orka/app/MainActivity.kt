@@ -1,6 +1,10 @@
 package com.orka.app
 
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -143,7 +147,7 @@ fun OrkaApp(
                             val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
                             } else {
-                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                appDetailsIntent(navController.context)
                             }
                             navController.context.startActivity(intent)
                         },
@@ -152,8 +156,7 @@ fun OrkaApp(
                             navController.context.startActivity(intent)
                         },
                         onOpenOemSettings = {
-                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                            navController.context.startActivity(intent)
+                            openDeviceSpecificOemSettings(navController.context)
                         },
                         onFinish = {
                             navController.navigate(CaptureRoute) {
@@ -218,3 +221,28 @@ private fun OrkaBottomBar(
 }
 
 private fun NavDestination?.isOnboarding(): Boolean = this?.hasRoute(OnboardingRoute::class) == true
+
+private fun appDetailsIntent(context: Context): Intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+    .setData(Uri.fromParts("package", context.packageName, null))
+
+private fun openDeviceSpecificOemSettings(context: Context) {
+    val manufacturer = Build.MANUFACTURER.lowercase()
+    val intents = buildList {
+        if (manufacturer.contains("oneplus") || manufacturer.contains("oplus")) {
+            add(Intent().setComponent(ComponentName("com.oneplus.security", "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity")))
+            add(Intent().setComponent(ComponentName("com.oneplus.security", "com.oneplus.security.permission.PermissionActivity")))
+            add(Intent("com.oneplus.security.action.BACKGROUND_OPTIMIZE"))
+        }
+        add(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        add(appDetailsIntent(context))
+    }
+
+    val launchableIntent = intents.firstOrNull { it.resolveActivity(context.packageManager) != null }
+        ?: appDetailsIntent(context)
+
+    try {
+        context.startActivity(launchableIntent)
+    } catch (_: ActivityNotFoundException) {
+        context.startActivity(appDetailsIntent(context))
+    }
+}

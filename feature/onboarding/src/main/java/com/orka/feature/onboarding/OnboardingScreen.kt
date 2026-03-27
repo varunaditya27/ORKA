@@ -117,7 +117,10 @@ fun OnboardingRoute(
             OrkaActionButton(text = "Open Battery Settings", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY, onClick = onOpenBatterySettings)
 
             Text("3. OEM-specific setup", style = MaterialTheme.typography.headlineMedium)
-            Text("If you use Xiaomi, Realme, or OPPO, open the OEM settings page and enable background activity or autostart.", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "If you use OnePlus (OxygenOS), Xiaomi, Realme, or OPPO, open OEM settings and enable auto-launch/background activity, then set battery usage to Unrestricted for ORKA.",
+                style = MaterialTheme.typography.bodyLarge,
+            )
             OrkaActionButton(text = "Open OEM Settings", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY, onClick = onOpenOemSettings)
 
             Text("4. Companion model kit", style = MaterialTheme.typography.headlineMedium)
