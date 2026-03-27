@@ -1,0 +1,8 @@
+-keep class com.orka.app.OrkaApplication { *; }
+-keep class * extends androidx.work.ListenableWorker { *; }
+-keep class * extends androidx.work.CoroutineWorker { *; }
+-keep class * extends androidx.room.RoomDatabase { *; }
+-keep class com.orka.**Hilt* { *; }
+-keep class dagger.hilt.** { *; }
+-keep class kotlinx.serialization.** { *; }
+-dontwarn javax.annotation.**

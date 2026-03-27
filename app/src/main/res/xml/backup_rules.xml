@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="model/" />
+    <exclude domain="database" path="orka.db" />
+</full-backup-content>
