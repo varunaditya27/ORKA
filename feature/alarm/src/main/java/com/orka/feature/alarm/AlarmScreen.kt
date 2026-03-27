@@ -1,0 +1,184 @@
+package com.orka.feature.alarm
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import com.orka.core.common.TimeFormatter
+import com.orka.core.common.UrgencyTier
+import com.orka.core.common.UrgencyCalculator
+import com.orka.core.designsystem.AlarmBackground
+import com.orka.core.designsystem.OrkaActionButton
+import com.orka.core.model.AlarmActionOption
+import com.orka.core.model.AlarmActionResolver
+import com.orka.core.model.BehaviorProfileRepository
+import com.orka.core.model.InteractionEvent
+import com.orka.core.model.InteractionType
+import com.orka.core.model.Task
+import com.orka.core.model.TaskRepository
+import com.orka.core.model.TaskStatus
+import com.orka.data.scheduler.SchedulerOrchestrator
+import dagger.hilt.android.lifecycle.HiltViewModel
+import java.time.Duration
+import java.time.Instant
+import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+
+data class AlarmUiState(
+    val task: Task? = null,
+    val reminderId: String? = null,
+    val actions: List<AlarmActionOption> = emptyList(),
+    val history: List<InteractionEvent> = emptyList(),
+)
+
+@HiltViewModel
+class AlarmViewModel @Inject constructor(
+    private val taskRepository: TaskRepository,
+    private val behaviorProfileRepository: BehaviorProfileRepository,
+    private val actionResolver: AlarmActionResolver,
+    private val schedulerOrchestrator: SchedulerOrchestrator,
+) : ViewModel() {
+    private val _uiState = MutableStateFlow(AlarmUiState())
+    val uiState = _uiState.asStateFlow()
+
+    fun load(reminderId: String) {
+        viewModelScope.launch {
+            val reminder = taskRepository.getReminder(reminderId) ?: return@launch
+            val task = taskRepository.getTask(reminder.taskId) ?: return@launch
+            val history = taskRepository.observeInteractions(task.id).first()
+            _uiState.value = AlarmUiState(
+                task = task,
+                reminderId = reminderId,
+                actions = actionResolver.resolve(task, history, Instant.now()),
+                history = history,
+            )
+        }
+    }
+
+    fun handleAction(type: InteractionType, onComplete: () -> Unit) {
+        val task = _uiState.value.task ?: return
+        viewModelScope.launch {
+            when (type) {
+                InteractionType.START_TASK -> {
+                    taskRepository.updateTaskStatus(task.id, TaskStatus.ACTIVE)
+                }
+
+                InteractionType.MARK_DONE -> {
+                    taskRepository.updateTaskStatus(task.id, TaskStatus.COMPLETED, Instant.now())
+                    schedulerOrchestrator.persistSchedule(task.id, emptyList())
+                }
+
+                InteractionType.RESCHEDULE -> {
+                    val updated = task.copy(
+                        deadline = task.deadline.plus(Duration.ofDays(1)),
+                        updatedAt = Instant.now(),
+                        status = TaskStatus.PENDING,
+                    )
+                    taskRepository.upsertTask(updated)
+                    val profile = behaviorProfileRepository.getProfile()
+                    val (_, reminders) = schedulerOrchestrator.schedule(
+                        updated,
+                        com.orka.core.model.SchedulingContext(
+                            profile = profile,
+                            interactionHistory = _uiState.value.history,
+                        ),
+                    )
+                    schedulerOrchestrator.persistSchedule(updated.id, reminders)
+                }
+
+                InteractionType.SNOOZE_SHORT -> scheduleSnooze(task, Duration.ofMinutes(30))
+                InteractionType.SNOOZE_LONG -> scheduleSnooze(task, Duration.ofHours(3))
+                InteractionType.SNOOZE_CUSTOM -> scheduleSnooze(task, Duration.ofHours(6))
+                InteractionType.SPLIT_TASK -> Unit
+                InteractionType.ACKNOWLEDGE,
+                InteractionType.IGNORE,
+                -> Unit
+            }
+
+            val event = InteractionEvent(taskId = task.id, reminderId = _uiState.value.reminderId, type = type)
+            taskRepository.recordInteraction(event)
+            behaviorProfileRepository.updateFromInteraction(task, event)
+            onComplete()
+        }
+    }
+
+    private suspend fun scheduleSnooze(task: Task, offset: Duration) {
+        val reminder = com.orka.core.model.ReminderEvent(
+            taskId = task.id,
+            scheduledTime = Instant.now().plus(offset),
+            sequenceNumber = 1,
+            alarmManagerId = (task.id.hashCode() * 31) + offset.toMinutes().toInt(),
+        )
+        schedulerOrchestrator.persistSchedule(task.id, listOf(reminder))
+    }
+}
+
+@Composable
+fun AlarmRoute(
+    reminderId: String,
+    onComplete: () -> Unit,
+    viewModel: AlarmViewModel = hiltViewModel(),
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(reminderId) { viewModel.load(reminderId) }
+    val task = state.task
+    val tier = task?.let { UrgencyCalculator.tier(it.deadline, Instant.now()) } ?: UrgencyTier.CALM
+
+    AlarmBackground(tier = tier) {
+        androidx.compose.foundation.layout.Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            androidx.compose.foundation.layout.Column(
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text("ORKA", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(task?.title ?: "Loading...", style = MaterialTheme.typography.displayLarge)
+                task?.let {
+                    val delta = Duration.between(Instant.now(), it.deadline)
+                    val dueText = if (delta.isNegative) {
+                        "Overdue by ${TimeFormatter.humanizeDuration(delta.abs())}"
+                    } else {
+                        "Due in ${TimeFormatter.humanizeDuration(delta)}"
+                    }
+                    Text(
+                        dueText,
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(it.category.name, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            androidx.compose.foundation.layout.Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                state.actions.forEach { action ->
+                    OrkaActionButton(
+                        text = action.label,
+                        emphasis = action.emphasis,
+                        onClick = { viewModel.handleAction(action.type, onComplete) },
+                    )
+                }
+            }
+        }
+    }
+}
