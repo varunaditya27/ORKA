@@ -1,0 +1,16 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.keystore
+app/release/
+app/debug/
+**/build/
+branding/generated/
+model-kit/
+.gradle-user-home/
+.tools/

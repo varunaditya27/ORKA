@@ -1,0 +1,220 @@
+package com.orka.app
+
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ListAlt
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavDestination
+import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
+import com.orka.core.designsystem.OrkaTheme
+import com.orka.core.model.ArchiveRoute
+import com.orka.core.model.CaptureRoute
+import com.orka.core.model.DiagnosticsRoute
+import com.orka.core.model.OnboardingRoute
+import com.orka.core.model.SettingsRepository
+import com.orka.core.model.SettingsRoute
+import com.orka.core.model.TaskDetailRoute
+import com.orka.core.model.TasksRoute
+import com.orka.core.model.UserSettings
+import com.orka.feature.alarm.AlarmRoute
+import com.orka.feature.archive.ArchiveRoute as ArchiveScreen
+import com.orka.feature.capture.CaptureRoute as CaptureScreen
+import com.orka.feature.diagnostics.DiagnosticsRoute as DiagnosticsScreen
+import com.orka.feature.onboarding.OnboardingRoute as OnboardingScreen
+import com.orka.feature.settings.SettingsRoute as SettingsScreen
+import com.orka.feature.taskdetail.TaskDetailRoute as TaskDetailScreen
+import com.orka.feature.tasks.TasksRoute as TasksScreen
+import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            OrkaApp()
+        }
+    }
+}
+
+@AndroidEntryPoint
+class AlarmActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        enableEdgeToEdge()
+        val reminderId = intent.getStringExtra("reminder_id").orEmpty()
+        setContent {
+            OrkaTheme {
+                AlarmRoute(
+                    reminderId = reminderId,
+                    onComplete = { finish() },
+                )
+            }
+        }
+    }
+}
+
+private data class TopLevelDestination(
+    val route: Any,
+    val label: String,
+    val icon: ImageVector,
+)
+
+data class RootUiState(
+    val settings: UserSettings = UserSettings(),
+)
+
+@HiltViewModel
+class RootViewModel @Inject constructor(
+    settingsRepository: SettingsRepository,
+) : ViewModel() {
+    val uiState = settingsRepository.observeSettings()
+        .map { settings -> RootUiState(settings = settings) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RootUiState())
+}
+
+@Composable
+fun OrkaApp(
+    viewModel: RootViewModel = hiltViewModel(),
+) {
+    val navController = rememberNavController()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val onboardingCompleted = uiState.settings.onboardingCompleted
+    val startRoute = if (onboardingCompleted) CaptureRoute else OnboardingRoute
+    val darkTheme = uiState.settings.darkModeOverride ?: isSystemInDarkTheme()
+
+    OrkaTheme(darkTheme = darkTheme) {
+        Scaffold(
+            bottomBar = {
+                val backStackEntry by navController.currentBackStackEntryAsState()
+                val destination = backStackEntry?.destination
+                if (!destination.isOnboarding()) {
+                    OrkaBottomBar(navController = navController, destination = destination)
+                }
+            },
+        ) { padding ->
+            NavHost(
+                navController = navController,
+                startDestination = startRoute,
+                modifier = Modifier.padding(padding),
+            ) {
+                composable<OnboardingRoute> {
+                    OnboardingScreen(
+                        onGrantExactAlarmPermission = {
+                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                            } else {
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                            }
+                            navController.context.startActivity(intent)
+                        },
+                        onOpenBatterySettings = {
+                            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            navController.context.startActivity(intent)
+                        },
+                        onOpenOemSettings = {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                            navController.context.startActivity(intent)
+                        },
+                        onFinish = {
+                            navController.navigate(CaptureRoute) {
+                                popUpTo(OnboardingRoute) { inclusive = true }
+                            }
+                        },
+                    )
+                }
+                composable<CaptureRoute> {
+                    CaptureScreen(
+                        onTaskCreated = { taskId -> navController.navigate(TaskDetailRoute(taskId)) },
+                    )
+                }
+                composable<TasksRoute> {
+                    TasksScreen(onTaskClick = { taskId -> navController.navigate(TaskDetailRoute(taskId)) })
+                }
+                composable<TaskDetailRoute> { backStackEntry ->
+                    val route = backStackEntry.toRoute<TaskDetailRoute>()
+                    TaskDetailScreen(taskId = route.taskId, onBack = { navController.popBackStack() })
+                }
+                composable<ArchiveRoute> {
+                    ArchiveScreen()
+                }
+                composable<SettingsRoute> {
+                    SettingsScreen()
+                }
+                composable<DiagnosticsRoute> {
+                    DiagnosticsScreen()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OrkaBottomBar(
+    navController: NavHostController,
+    destination: NavDestination?,
+) {
+    val items = listOf(
+        TopLevelDestination(CaptureRoute, "Capture", Icons.Outlined.Edit),
+        TopLevelDestination(TasksRoute, "Tasks", Icons.AutoMirrored.Outlined.ListAlt),
+        TopLevelDestination(ArchiveRoute, "Archive", Icons.Outlined.Archive),
+        TopLevelDestination(SettingsRoute, "Settings", Icons.Outlined.Settings),
+        TopLevelDestination(DiagnosticsRoute, "Diagnostics", Icons.Outlined.BugReport),
+    )
+
+    NavigationBar {
+        items.forEach { item ->
+            NavigationBarItem(
+                selected = destination?.hasRoute(item.route::class) == true,
+                onClick = {
+                    navController.navigate(item.route) {
+                        launchSingleTop = true
+                    }
+                },
+                icon = { Icon(item.icon, contentDescription = item.label) },
+                label = { Text(item.label) },
+            )
+        }
+    }
+}
+
+private fun NavDestination?.isOnboarding(): Boolean = this?.hasRoute(OnboardingRoute::class) == true
