@@ -14,3 +14,4 @@ branding/generated/
 model-kit/
 .gradle-user-home/
 .tools/
+.kotlin/
