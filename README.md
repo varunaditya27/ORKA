@@ -1,128 +1,159 @@
+<!-- markdownlint-disable MD033 -->
 <div align="center">
 
-# ⬛ ORKA 
+# 🚀 ORKA
 
-<img src="branding/source/logo.svg" alt="ORKA Logo" width="120" />
+<img src="branding/source/logo.svg" alt="ORKA logo" width="160" />
 
-**Execution, not intention.** <br>
-*An AI-assisted personal execution system for Android, designed to close the gap between knowing what to do and actually doing it.*
+**Execution, not intention.**
 
-[![Android Min SDK](https://img.shields.io/badge/Min%20SDK-31-blue.svg)](#)
-[![Compile SDK](https://img.shields.io/badge/Compile%20SDK-35-blueviolet.svg)](#)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.1.20-orange.svg)](https://kotlinlang.org)
-[![License](https://img.shields.io/badge/License-Proprietary-red.svg)]()
+*An Android execution engine that turns intent into action using exact alarms, context-aware responses, and local-first intelligence.*
 
----
+![Min SDK](https://img.shields.io/badge/Min%20SDK-31-blue.svg)
+![Compile SDK](https://img.shields.io/badge/Compile%20SDK-35-blueviolet.svg)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.1.20-orange.svg)
+![License](https://img.shields.io/badge/License-Proprietary-red.svg)
 
 </div>
-
-## 📌 What is ORKA?
-
-ORKA is not a passive to-do list. It is an active cognitive agent built entirely for Android, operating on behalf of your future self. Instead of gentle notifications that get lost in the noise, ORKA uses **full-screen exact alarms** to arrest your attention and enforce action at the moment it counts. 
-
-Built first for offline privacy and extreme speed, ORKA locally processes task entry via natural language capabilities to infer deadlines and auto-schedule reminders, driving your execution follow-through intelligently over time.
-
-## ✨ Key Features
-
-- **⚡ Frictionless NLP Capture**: Enter tasks rapidly via natural language. E.g., *"Submit ML assignment by Friday 11:59pm"*.
-- **🚨 Full-Screen Exact Alarms**: Doesn't ask politely. Intervenes with unignorable, full-screen AlarmManager-driven execution reminders.
-- **🧠 Local-First On-Device AI**: Powered by a locally inferred LLM (Gemma 2B INT4). No cloud connection required for core functional parsing. 
-- **⚖️ Dynamic Action Set**: Alarms present context-aware actions based on task urgency, time parameters, and interaction history. No easy "dismiss".
-- **🎨 Dark-First Premium UI**: Beautiful, depth-layered UI leveraging Satoshi (language) and JetBrains Mono (data points) to maximize text hierarchy and legibility.
+<!-- markdownlint-enable MD033 -->
 
 ---
 
-## 📸 Product Gallery
+## 🎯 Why ORKA
 
-<div align="center">
-  <table width="100%">
-    <tr>
-      <td align="center"><em>[Placeholder: Capture Screen]</em><br><img src="docs/assets/placeholder-capture.png" width="200"/></td>
-      <td align="center"><em>[Placeholder: Task List]</em><br><img src="docs/assets/placeholder-list.png" width="200"/></td>
-      <td align="center"><em>[Placeholder: Alarm Screen]</em><br><img src="docs/assets/placeholder-alarm.png" width="200"/></td>
-      <td align="center"><em>[Placeholder: Diagnostics]</em><br><img src="docs/assets/placeholder-diagnostics.png" width="200"/></td>
-    </tr>
-  </table>
-</div>
+Most task apps remind you.
+ORKA intervenes.
+
+It combines:
+
+- **Natural-language capture** for low-friction input.
+- **Deterministic scheduling** with adaptive/RL pathways.
+- **Full-screen exact alarms** for execution pressure at the right moment.
+- **On-device model workflow** for private, local-first operation.
 
 ---
 
-## 🗺️ High-Level System Overview
+## ✨ Product highlights
+
+### 🚨 Execution-first reminders
+
+ORKA uses `AlarmManager`-driven exact alarms and an action surface designed for momentum:
+
+- `START_TASK`
+- `MARK_DONE`
+- context-sensitive options (reschedule/snooze/split)
+- acknowledgement trail for behavior profiling
+
+### 🧠 Bundled local model (ADB workflow)
+
+For personal installs, the model is packaged from your local `model-kit/` during build.
+
+- No manual model-path typing during onboarding.
+- Automatic first-run provisioning into app storage.
+- Fallback parsing remains available if model provisioning fails.
+
+### 📱 OEM-aware reliability posture
+
+ORKA includes setup guidance for aggressive OEM power policies (including OnePlus/OxygenOS) to reduce missed reminders in real-world conditions.
+
+---
+
+## 🗺️ System overview
 
 ```mermaid
 flowchart LR
-    User([👤 User]) -->|Natural Language| Capture[Capture Interface]
-    Capture --> AI[🧠 Local AI Parser<br>(Gemma 2B)]
-    Capture --> RegEx[Fallback Parser]
-    AI -->|Structured Draft| Confirm[Confirmation Sheet]
-    RegEx --> Confirm
-    Confirm -->|Validated| Database[(Room Database)]
-    Database --> Scheduler[⏱️ Smart Scheduler]
-    Scheduler --> AlarmManager[🔔 Android AlarmManager]
-    AlarmManager --> AlarmUI[🚨 Full-Screen Alarm Interface]
-    AlarmUI -->|User Interaction| Logging[📊 Behavior Diagnostics]
-    Logging --> Scheduler
+    User([User]) --> Capture[Capture]
+    Capture --> Parser[Task Parser]
+    Parser --> Confirm[Draft Confirmation]
+    Confirm --> DB[(Room)]
+    DB --> Scheduler[Scheduler Orchestrator]
+    Scheduler --> Alarm[AlarmManager]
+    Alarm --> AlarmUI[Full-screen Alarm UI]
+    AlarmUI --> Feedback[Interaction Events]
+    Feedback --> Scheduler
 ```
 
 ---
 
-## 🚀 Setup & Installation
+## 🚀 Quick start (ADB-first)
 
-ORKA is built as a greenfield Kotlin/Jetpack Compose app targeting internal/sideload-first drops. 
+### ✅ Prerequisites
 
-### 1. Requirements
-*   **Android Studio**: Ladybug (or latest stable)
-*   **JDK**: 17+
-*   **Android Target Device or Emulator**: API 31+ (Android 12+) 
+- Android Studio (latest stable)
+- JDK 17+
+- Android device/emulator on API 31+
+- `adb` available in your shell
 
-### 2. Building the Project
-Clone the repository and build via Gradle:
+### 📦 1) Place the model file
+
+Copy your model to:
+
+- `model-kit/gemma-2b-int4.gguf`
+
+> Packaging/install tasks fail fast if this file is missing.
+
+### 🛠️ 2) Build and install
+
 ```bash
-# Debug Compile & Assembly
 ./gradlew :app:assembleDebug
-
-# Run directly on attached Android device
 ./gradlew :app:installDebug
 ```
 
-### 3. Offline Model Kit Setup (Gemma 2B) 🧠
-Because the unquantized/quantized LLM is massive (1GB+), it is **not** bundled directly in the APK. You must side-load the companion asset kit on a fresh install:
-1. Obtain the required `gemma-2b-it-gpu-int4.bin` artifact.
-2. Follow the onboarding instructions in the app to selectively import the model file from your device's `Downloads` or `Documents` folder. 
-3. *Note:* If skipped, ORKA gracefully degrades to an internal fallback heuristic/regex parser automatically with zero crashes.
+### 🎬 3) First launch behavior
+
+- ORKA auto-provisions the bundled model to app-managed storage.
+- Onboarding shows model status (no manual path input required).
 
 ---
 
-## 🧪 Development & Testing
-
-ORKA utilizes a highly robust, CI-ready testing pipeline based heavily on Fakes, JUnit4, Truth, and Turbine.
+## 🧪 Testing & verification
 
 ```bash
-# Run unit tests across all component layers
+# Full JVM test suite
 ./gradlew test
 
-# Execute UI instrumentation & detailed end-to-end device flows
-./gradlew connectedDebugAndroidTest
+# App instrumentation tests (requires connected device/emulator)
+./gradlew :app:connectedDebugAndroidTest
 
-# Generate layout baseline profiles for peak app-start performance
-./gradlew :benchmark:generateBaselineProfile
-
-# Run system frame-rate benchmarking smoke tests
-./gradlew :benchmark:connectedCheck
+# Macrobenchmark & baseline profile modules
+./gradlew :benchmark:assemble :baselineprofile:assemble
 ```
 
 ---
 
-## 📖 Deep Technical Reference 
+## 🔋 Device reliability checklist (OnePlus-focused)
 
-For heavily detailed documentation spanning our software modularity, exact alarm intent architectures, data persistence lifecycle, and scheduling pipeline design, please refer to the dedicated architecture guide:
+For best reminder delivery on OnePlus/OxygenOS:
 
-👉 [**ARCHITECTURE.md**](./ARCHITECTURE.md)
+1. Allow exact alarms.
+2. Set battery usage for ORKA to **Unrestricted**.
+3. Enable background/auto-launch permissions in OEM security settings.
+4. Keep notifications enabled.
 
+---
+
+## 📚 Documentation map
+
+- Product and usage (this file): `README.md`
+- Engineering blueprint: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- Local model setup details: `model-kit/README.md`
+
+---
+
+## 🧾 Status notes
+
+- Distribution target: **personal ADB installs**
+- Play Store delivery: **out of scope** for this workflow
+- Model source of truth: local gitignored `model-kit/`
+
+---
+
+<!-- markdownlint-disable MD033 -->
 <div align="center">
 
 ---
 
-*“Execution, not intention”*
+**⚡ ORKA: execution over intention.**
 
 </div>
+<!-- markdownlint-enable MD033 -->

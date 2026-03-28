@@ -1,158 +1,239 @@
-<div align="center">
+# ORKA Architecture
 
-# 🏛️ ORKA Architecture
-
-**Deep Design, Engineering Principles, & Integration Maps**
-
-*This document explains the internal engineering blueprint, data flow, memory architecture, scheduling pipelines, and testing apparatus running ORKA.*
+Deep engineering blueprint for ORKA's modular Android stack, execution runtime, and reliability pipeline.
 
 ---
 
-</div>
+## Table of contents
 
-## 🧩 1. Module Layout & Gradle Architecture
+1. [Module graph](#1-module-graph)
+2. [Data and state foundations](#2-data-and-state-foundations)
+3. [Bundled model pipeline (ADB-first)](#3-bundled-model-pipeline-adb-first)
+4. [Parsing and draft generation](#4-parsing-and-draft-generation)
+5. [Scheduling stack](#5-scheduling-stack)
+6. [Alarm delivery and action surface](#6-alarm-delivery-and-action-surface)
+7. [Diagnostics and OEM reliability](#7-diagnostics-and-oem-reliability)
+8. [Testing strategy](#8-testing-strategy)
+9. [Device matrix and operational posture](#9-device-matrix-and-operational-posture)
 
-ORKA leverages a strict, feature-based multi-module Gradle layout to ensure rigid isolation of concerns, highly concurrent Gradle execution, and completely decoupled UI. Compilation dependencies flow downward only. 
+---
+
+## 1. Module graph
+
+ORKA is a strict multi-module Gradle project with downward dependency flow and UDF-oriented boundaries.
 
 ```mermaid
 flowchart TB
-    subgraph App Shell
-        APP[m:app]
-    end
+  subgraph APP[App shell]
+    A[app]
+  end
 
-    subgraph Feature Modules
-        ONBOARD[f:onboarding]
-        CAPTURE[f:capture]
-        TASKS[f:tasks]
-        DETAIL[f:taskdetail]
-        ARCHIVE[f:archive]
-        SETTINGS[f:settings]
-        DIAG[f:diagnostics]
-        ALARM[f:alarm]
-    end
+  subgraph FEATURE[Feature modules]
+    F1[onboarding]
+    F2[capture]
+    F3[tasks]
+    F4[taskdetail]
+    F5[archive]
+    F6[settings]
+    F7[diagnostics]
+    F8[alarm]
+  end
 
-    subgraph Data & Execution Engines
-        PARSER[d:parser]
-        SCHED[d:scheduler]
-        BEHAVIOR[d:behavior]
-        EXEC[d:execution]
-        RL[d:rl]
-    end
+  subgraph DATA[Data engines]
+    D1[parser]
+    D2[scheduler]
+    D3[behavior]
+    D4[execution]
+    D5[rl]
+  end
 
-    subgraph Core Infrastructure
-        COMMON[c:common]
-        MODEL[c:model]
-        DESIGN[c:designsystem]
-        DB[c:database]
-        TESTING[c:testing]
-    end
+  subgraph CORE[Core platform]
+    C1[common]
+    C2[model]
+    C3[database]
+    C4[designsystem]
+    C5[testing]
+  end
 
-    %% Wiring
-    APP --> ONBOARD & CAPTURE & TASKS & DETAIL & ARCHIVE & SETTINGS & DIAG & ALARM
-    
-    ONBOARD & CAPTURE & ALARM --> PARSER & SCHED & EXEC
-    
-    PARSER & SCHED & EXEC & BEHAVIOR & RL --> COMMON & MODEL & DB
-    
-    ONBOARD & CAPTURE & TASKS & ALARM --> DESIGN
+  A --> FEATURE
+  FEATURE --> DATA
+  DATA --> CORE
+  FEATURE --> C4
 ```
 
-> **Note:** All modules strictly enforce Unidirectional Data Flow (UDF) via the MVVM pattern (`ViewModel` + `StateFlow`). Domain layers are totally sealed, communicating via suspendable `Flow` mappings with zero direct data-layer classes leaking into UI blocks.
+### Architectural invariants
+
+- UI speaks through `ViewModel` + `StateFlow`.
+- Feature modules do not reach across peer feature internals.
+- Domain contracts live in `core:model`.
+- Infra details remain in data/core modules.
 
 ---
 
-## 💾 2. Persistence & Storage Strategy
+## 2. Data and state foundations
 
-ORKA requires maximum resilience due to its nature as a mission-critical alert system.
+### Room persistence
 
-- **Relational Data Context (Room)**: Uses a secure, credential-encrypted database (`com.orka.core.database`) natively built with Kotlin KSP. Handles the entire entity graph modeling for Active Tasks, Snoozed Reminders, and extensive historical Behavioral logging. 
-- **Key-Value Config (DataStore)**: Fast, type-safe settings mapped via `Preferences` DataStore intended for Onboarding gates, Feature Flags, Diagnostics metadata, and LLM Model Installation schemas.
-- **Reboot Resilience Registry**: A tiny cache proxy of raw `AlarmManager` intents sits stored in Device-Protected Storage. This ensures execution intents are safely and silently rehydrated immediately matching unprompted OS-level device reboots without waiting for user unlock.
+- Task, reminder, and interaction records persist in `core:database`.
+- Schedulers and alarms are built around stable task/reminder identity.
+
+### DataStore preferences
+
+- `UserSettings` persists onboarding completion, scheduler toggles, and theme state.
+- Model metadata surfaces through `ModelInstallState` from `ModelInstaller`.
+
+### Runtime state model
+
+- Parsing state: `ParseMode` (`GEMMA`, `FALLBACK`, `ERROR`)
+- Diagnostics state: capability + model + scheduler readiness
+- Scheduling state: rule/adaptive/RL mode selection
 
 ---
 
-## 🧠 3. Model Lifecycle & The On-Device AI Pipeline
+## 3. Bundled model pipeline (ADB-first)
 
-ORKA acts as a localized agent utilizing `MediaPipe LLM Inference` specifically targeted for a **Gemma-2B INT4** quantization. Operations occur exclusively offline.
+This repository targets **personal ADB installs**, not Play distribution.
 
-### Model Bootstrapping & Validation
-1. **Side-Load Verification**: Because of Google Play/APK limitations passing 1GB+, the asset `.bin` is sideloaded. The file is mapped and strictly checked against a canonical `SHA-256` integrity array upon user import.
-2. **App-Managed Scoping**: Asset models get safely cached into app-managed external storage perimeters where it's unreachable without correct permissions.
-3. **Graceful Degradation Design**: If the user lacks storage space, operates an incompatible sub-tier device compute context, or skips AI import, `TaskParser` will automatically decouple to an exact lexical parsing routine natively bundled called `RuleBasedParserImpl`. 
+### Build-time packaging
 
-### Logic Parsing Run-Book
+- Source of truth: local gitignored `model-kit/gemma-2b-int4.gguf`
+- App build copies model into generated assets under `model/`
+- Packaging/install tasks fail fast when model file is missing
+- `.gguf` is marked uncompressed in packaging config
+
+### First-run provisioning
+
+- `CompanionKitModelInstaller` checks app assets for bundled model
+- If found, it copies to app-managed storage: `files/model/gemma-2b-int4.gguf`
+- `ModelInstallState` transitions through `IMPORTING` → `READY` (or `FAILED`)
+- Onboarding/settings expose status + retry, without manual path entry
+
+### Backup stance
+
+- Runtime model copy (`files/model`) remains excluded from backup and transfer rules
+- Prevents oversized backup payloads and restore inconsistencies
+
+---
+
+## 4. Parsing and draft generation
+
+`DefaultTaskParser` provides deterministic draft extraction and confidence hints.
+
 ```mermaid
 sequenceDiagram
-    participant UI as Capture Screen
-    participant Val as TaskDraftValidator
-    participant MMP as GemmaTaskParser
-    participant H_Reg as HeuristicFallback
-    
-    UI->>Val: Submit Raw Input
-    alt Has Active ML Model Verified?
-        Val->>MMP: Run ML Parsing prompt (Temp: 0.1)
-        MMP-->>Val: Response (JSON Format/Tokens)
-    else Missing or Incompatible 
-        Val->>H_Reg: Execute offline regex heuristics
-        H_Reg-->>Val: Resolved property map Draft
-    end
-    Val-->>UI: Output cleanly to Editable Confirmation Sheet
+  participant U as User Input
+  participant P as TaskParser
+  participant V as Draft Validator
+  participant C as Capture UI
+
+  U->>P: Raw natural-language task
+  P->>P: Infer deadline/category/effort
+  P-->>C: TaskDraft + ParseMode
+  C->>V: Validate before confirm
+  V-->>C: ValidationResult
 ```
 
----
+### Parse-mode semantics
 
-## ⏱️ 4. Scheduler Engine & Progressive Policies
+- `GEMMA`: model file is present and non-empty in app model storage
+- `FALLBACK`: parser runs deterministic heuristics without model presence
 
-One rigid abstract interface `SchedulerPolicy` handles algorithm iteration over time. Telemetry dictates standard operations.
-
-- **Phase 1: Rule-Based Scheduling** (Baseline)
-  It outputs pure static timelines derived mathematically working backward against the `task.deadline`.
-- **Phase 2: Adaptive Scheduling** (Telemetry Dependent)
-  Unlocked autonomously when `BehaviorProfileRepository` captures adequate interaction sample sizing. Dynamically pivots alarm triggers mapping strictly inside the calculated "high-productivity temporal window" learned locally.
-- **Phase 3: Reinforcement Learning (RL)** (Experimental Layer)
-  Functions across `RlTrainer` executed entirely asynchronously utilizing `WorkManager` constraints against Idle+Charging windows only. Penalizes ignore heuristics while rewarding successfully executed behaviors mathematically adjusting model hyper-parameters over thousands of interactions.
+> Current implementation focuses on deterministic reliability while keeping model-provisioning infrastructure production-ready.
 
 ---
 
-## 🔔 5. Alarm Delivery & Intent Path 
+## 5. Scheduling stack
 
-ORKA utilizes deep system overrides. This is explicitly **not a background push notification system**.
+ORKA orchestrates reminders through layered policies:
 
-1. **Broadcast Execution**: Trigger constraints utilize `AlarmManager.setAlarmClock()` (API 31+) triggering hard-mapped `BroadcastReceiver` configurations.
-2. **Permission Matrices**: Handled directly in the Onboarding Module requiring absolute adherence requesting both `SCHEDULE_EXACT_ALARM` as well as disabling Android OEM Battery Optimizations natively.
-3. **System Interpolation**: `AlarmActionResolver` fires synchronously on the intent arriving, mapping real-time local variables (e.g., proximity to deadline timestamp) dynamically resolving whether an action like `SNOOZE_SHORT` or `ACKNOWLEDGE` is legally available, pushing exactly 2 to 4 actions down into an un-dismissible Compose screen rendering on-top of all locks.
+1. **Rule-based baseline**
+   - deterministic schedule from deadline/effort context
+2. **Adaptive mode**
+   - behavior-profile adjustments when enough interaction signal exists
+3. **RL mode**
+   - enabled when trainer readiness reaches `Ready`
 
----
-
-## 🧪 6. Testing Harness & Continuous Quality
-
-`core:testing` supplies a vast fake-first harness constructed over JUnit4 + Truth + Coroutines Turbine execution. 
-
-- **Stub Avoidance Methodology**: Heavy implementation of `FakeBehaviorProfileRepository`, `FakeTaskParser`, and exact test fixtures.
-- **Rigid Determinism**: `MainDispatcherRule` prevents async-related race conditions across Coroutine `runBlockingTest` contexts. Everything from model timeouts to parser string mismatch errors maps cleanly in 100% CI coverage scope.
-- **Performance Profiling Constraints**: 
-  - **Baseline Profiles**: Built-in logic statically mapping critical hot-paths directly stopping runtime AOT stutter on fresh Cold-Starts + LLM context warming.
-  - **Macrobenchmark Suites**: Automates scrolling and navigation lag execution logic natively validating performance rendering inside connected testbeds targeting strict sub-16ms deadlines. 
+`SchedulerOrchestrator` chooses mode and persists resulting reminder timelines.
 
 ---
 
-## 📱 7. Physical Device Hardware Matrix 
+## 6. Alarm delivery and action surface
 
-Given how vicious some OEM battery policies are against legitimate Alarm architectures, engineering must test OS constraints across target lines specifically defined by non-AOSP behaviors:
+### Delivery path
 
-| Manufacturer (OS) | Battery Optimization Posture | Bypass Action & Requirement Lifecycle |
-|:---|:---|:---|
-| **Google (Pixel UI)** | Managed purely by Standby Buckets | Requires default AOSP prompt opt-out |
-| **Samsung (One UI)** | Suspends processes into Deep Sleep | Requires custom specific whitelist intervention override |
-| **Xiaomi (MIUI)** | Blocks secondary Activity starts | Mandates granting explicit Auto-Start permissions via popup |
-| **Oppo/Realme (ColorOS)**| High-aggressive kill bucket defaults | Requires manual user-driven explicit system app lock toggles | 
+- Exact alarms are registered via platform alarm services.
+- Alarm UI is full-screen and action-driven (not passive notification-only).
 
-*The application aggregates these metrics securely locally avoiding missing-alarm catastrophes via proactive user-reporting inside native UI.*
+### Action composition
 
-<div align="center">
+Action surface is deterministic and bounded:
+
+- start
+- completion
+- acknowledgement
+- context action (snooze/reschedule/split)
+
+This keeps runtime behavior predictable and testable under high urgency scenarios.
 
 ---
 
-*Engineered with discipline, precision, and zero compromises.*
+## 7. Diagnostics and OEM reliability
 
-</div>
+`DiagnosticsRepository` aggregates:
+
+- exact alarm permission readiness
+- notification availability
+- battery optimization posture
+- OEM action requirement
+- model availability
+- RL readiness and active scheduler mode
+
+### OEM detection posture
+
+OEM action-required handling includes:
+
+- Xiaomi
+- Realme
+- OPPO
+- OnePlus / OPlus
+
+This powers onboarding and diagnostics guidance for aggressive process management environments.
+
+---
+
+## 8. Testing strategy
+
+### Unit level
+
+- JUnit4 + Truth + coroutines-test
+- fake-first contracts via `core:testing`
+- deterministic time/control with dispatcher rules
+
+### Integration/instrumentation level
+
+- Parser/installer behavior in android tests
+- app flow coverage in compose instrumentation suites
+- room DAO validation in `core:database` android tests
+
+### Performance gates
+
+- baseline profile module
+- macrobenchmark module
+
+---
+
+## 9. Device matrix and operational posture
+
+Given OEM power-management variance, ORKA validates behavior against mixed vendor policies.
+
+| Vendor family | Risk profile | Operational expectation |
+| --- | --- | --- |
+| Pixel (AOSP-like) | Low | Standard exact-alarm + notification setup |
+| Samsung (One UI) | Medium | Additional battery/deep-sleep allowlisting |
+| OnePlus/OPlus (OxygenOS) | Medium-High | Background/auto-launch + unrestricted battery |
+| Xiaomi/MIUI | High | OEM autostart/background allowances required |
+| OPPO/Realme (ColorOS) | High | Aggressive kill mitigation via OEM settings |
+
+---
+
+Engineered for deterministic execution under real-world Android constraints.
