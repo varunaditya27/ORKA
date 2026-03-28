@@ -7,14 +7,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -24,6 +20,7 @@ import com.orka.core.designsystem.OrkaActionButton
 import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSpacing
 import com.orka.core.designsystem.OrkaSurface
+import com.orka.core.model.ModelAvailability
 import com.orka.core.model.ModelInstaller
 import com.orka.core.model.SettingsRepository
 import com.orka.core.model.UserSettings
@@ -36,7 +33,8 @@ import kotlinx.coroutines.launch
 
 data class SettingsUiState(
     val settings: UserSettings = UserSettings(),
-    val modelMessage: String = "No model imported",
+    val modelAvailability: ModelAvailability = ModelAvailability.NOT_INSTALLED,
+    val modelMessage: String = "Bundled model unavailable",
 )
 
 @HiltViewModel
@@ -48,7 +46,11 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.observeSettings(),
         modelInstaller.observeState(),
     ) { settings, modelState ->
-        SettingsUiState(settings = settings, modelMessage = modelState.message ?: modelState.modelPath ?: "No model imported")
+        SettingsUiState(
+            settings = settings,
+            modelAvailability = modelState.availability,
+            modelMessage = modelState.message ?: modelState.modelPath ?: "Bundled model unavailable",
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     fun toggleAdaptive(enabled: Boolean) {
@@ -75,10 +77,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun importModel(path: String) {
+    fun retryBundledModelProvisioning() {
         viewModelScope.launch {
-            modelInstaller.installFromCompanionKit(path)
-            settingsRepository.update { it.copy(importedModelPath = path) }
+            modelInstaller.installBundledModelIfAvailable()
         }
     }
 
@@ -92,9 +93,6 @@ fun SettingsRoute(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var modelPath by remember(state.settings.importedModelPath) {
-        mutableStateOf(state.settings.importedModelPath ?: "model-kit/gemma-2b-int4.gguf")
-    }
 
     OrkaSurface {
         OrkaScreenContainer(
@@ -112,16 +110,19 @@ fun SettingsRoute(
                 OrkaActionButton(text = "Light", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) { viewModel.toggleDarkMode(false) }
             }
 
-            Text("Companion model", style = MaterialTheme.typography.headlineMedium)
-            Text(state.modelMessage, style = MaterialTheme.typography.bodyLarge)
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = modelPath,
-                onValueChange = { modelPath = it },
-                label = { Text("Model path") },
+            Text("Bundled model", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Model provisioning is automatic for local ADB installs.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            OrkaActionButton(text = "Import Model", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) {
-                viewModel.importModel(modelPath)
+            Text(state.modelMessage, style = MaterialTheme.typography.bodyLarge)
+            if (state.modelAvailability != ModelAvailability.READY) {
+                OrkaActionButton(
+                    text = "Retry Model Provisioning",
+                    emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
+                    onClick = viewModel::retryBundledModelProvisioning,
+                )
             }
             OrkaActionButton(text = "Reset Model", emphasis = com.orka.core.model.ActionEmphasis.TERTIARY, onClick = viewModel::resetModel)
             OrkaActionButton(text = "Rerun Onboarding", emphasis = com.orka.core.model.ActionEmphasis.TERTIARY, onClick = viewModel::resetOnboarding)

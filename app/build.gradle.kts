@@ -7,6 +7,35 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+import org.gradle.api.GradleException
+import org.gradle.api.tasks.Copy
+
+val bundledModelFileName = "gemma-2b-int4.gguf"
+val bundledModelSource = rootProject.file("model-kit/$bundledModelFileName")
+val bundledModelAssetsDir = layout.buildDirectory.dir("generated/bundled-model-assets/model")
+
+val prepareBundledModel by tasks.registering(Copy::class) {
+    group = "build setup"
+    description = "Copies local bundled Gemma model into generated app assets."
+    from(rootProject.file("model-kit")) {
+        include(bundledModelFileName)
+    }
+    into(bundledModelAssetsDir)
+}
+
+val verifyBundledModelForPackaging by tasks.registering {
+    group = "verification"
+    description = "Fails packaging/install if the local bundled model is missing."
+    doLast {
+        if (!bundledModelSource.exists()) {
+            throw GradleException(
+                "Bundled model missing: ${bundledModelSource.absolutePath}. " +
+                    "Place '$bundledModelFileName' in the root 'model-kit/' directory before assembling/installing APKs.",
+            )
+        }
+    }
+}
+
 android {
     namespace = "com.orka.app"
     compileSdk = 35
@@ -48,13 +77,43 @@ android {
         buildConfig = true
     }
 
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(bundledModelAssetsDir)
+        }
+    }
+
+    androidResources {
+        noCompress += "gguf"
+    }
+
     packaging {
-        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 
     testOptions {
         animationsDisabled = true
     }
+}
+
+tasks.matching {
+    it.name in setOf(
+        "mergeDebugAssets",
+        "mergeReleaseAssets",
+        "packageDebug",
+        "packageRelease",
+        "bundleDebug",
+        "bundleRelease",
+        "assembleDebug",
+        "assembleRelease",
+        "installDebug",
+        "installRelease",
+    )
+}.configureEach {
+    dependsOn(prepareBundledModel)
+    dependsOn(verifyBundledModelForPackaging)
 }
 
 dependencies {

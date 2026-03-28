@@ -46,6 +46,7 @@ import com.orka.core.model.ArchiveRoute
 import com.orka.core.model.CaptureRoute
 import com.orka.core.model.DiagnosticsRoute
 import com.orka.core.model.OnboardingRoute
+import com.orka.core.model.ModelInstaller
 import com.orka.core.model.SettingsRepository
 import com.orka.core.model.SettingsRoute
 import com.orka.core.model.TaskDetailRoute
@@ -65,6 +66,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -110,7 +112,15 @@ data class RootUiState(
 @HiltViewModel
 class RootViewModel @Inject constructor(
     settingsRepository: SettingsRepository,
+    modelInstaller: ModelInstaller,
 ) : ViewModel() {
+
+    init {
+        viewModelScope.launch {
+            modelInstaller.installBundledModelIfAvailable()
+        }
+    }
+
     val uiState = settingsRepository.observeSettings()
         .map { settings -> RootUiState(settings = settings) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RootUiState())

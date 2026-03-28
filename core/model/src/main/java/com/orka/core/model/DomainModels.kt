@@ -277,6 +277,7 @@ interface RlTrainer {
 
 interface ModelInstaller {
     fun observeState(): Flow<ModelInstallState>
+    suspend fun installBundledModelIfAvailable(): ModelInstallState
     suspend fun installFromCompanionKit(sourcePath: String, expectedChecksum: String? = null): ModelInstallState
     suspend fun reset()
 }

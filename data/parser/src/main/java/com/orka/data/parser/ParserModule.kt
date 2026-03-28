@@ -31,11 +31,18 @@ import java.time.ZonedDateTime
 import java.time.temporal.TemporalAdjusters
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 private const val MODEL_FILE_NAME = "gemma-2b-int4.gguf"
+private const val BUNDLED_MODEL_ASSET_PATH = "model/$MODEL_FILE_NAME"
 
 class DefaultTaskDraftValidator @Inject constructor() : TaskDraftValidator {
     override fun validate(draft: TaskDraft): TaskDraftValidationResult {
@@ -55,7 +62,8 @@ class DefaultTaskParser @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : TaskParser {
     override suspend fun parse(rawInput: String, context: ParserContext): TaskParseResult {
-        val modelInstalled = File(this.context.filesDir, "model/$MODEL_FILE_NAME").exists()
+        val modelInstalled = File(this.context.filesDir, "model/$MODEL_FILE_NAME").exists() &&
+            File(this.context.filesDir, "model/$MODEL_FILE_NAME").length() > 0L
         val draft = fallbackParse(
             rawInput = rawInput,
             context = context,
@@ -172,48 +180,111 @@ class CompanionKitModelInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : ModelInstaller {
     private val modelDirectory = File(context.filesDir, "model").apply { mkdirs() }
+    private val installMutex = Mutex()
+    private val installerScope = CoroutineScope(Dispatchers.IO)
     private val state = MutableStateFlow(
         if (installedModelFile().exists()) {
             ModelInstallState(
                 availability = ModelAvailability.READY,
                 modelPath = installedModelFile().absolutePath,
                 sizeBytes = installedModelFile().length(),
+                message = "Bundled model ready.",
             )
         } else {
             ModelInstallState()
         },
     )
 
+    init {
+        if (!installedModelFile().exists()) {
+            installerScope.launch {
+                installBundledModelIfAvailable()
+            }
+        }
+    }
+
     override fun observeState(): Flow<ModelInstallState> = state.asStateFlow()
+
+    override suspend fun installBundledModelIfAvailable(): ModelInstallState {
+        return installBundledModelIfAvailable(BUNDLED_MODEL_ASSET_PATH)
+    }
+
+    internal suspend fun installBundledModelIfAvailable(assetPath: String): ModelInstallState {
+        return installMutex.withLock {
+            val existing = installedModelFile()
+            if (existing.exists() && existing.length() > 0L) {
+                return@withLock ModelInstallState(
+                    availability = ModelAvailability.READY,
+                    modelPath = existing.absolutePath,
+                    checksum = sha256(existing),
+                    sizeBytes = existing.length(),
+                    message = "Bundled model ready.",
+                ).also { state.value = it }
+            }
+
+            if (!hasBundledAsset(assetPath)) {
+                return@withLock ModelInstallState(
+                    availability = ModelAvailability.NOT_INSTALLED,
+                    message = "Bundled model asset not found in the app package.",
+                ).also { state.value = it }
+            }
+
+            state.value = ModelInstallState(
+                availability = ModelAvailability.IMPORTING,
+                message = "Preparing bundled model...",
+            )
+
+            return@withLock runCatching {
+                withContext(Dispatchers.IO) {
+                    context.assets.open(assetPath).use { input ->
+                        existing.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+                val checksum = sha256(existing)
+                ModelInstallState(
+                    availability = ModelAvailability.READY,
+                    modelPath = existing.absolutePath,
+                    checksum = checksum,
+                    sizeBytes = existing.length(),
+                    message = "Bundled model ready.",
+                ).also { state.value = it }
+            }.getOrElse { throwable ->
+                existing.delete()
+                updateFailure(throwable.message ?: "Failed to prepare bundled model.")
+            }
+        }
+    }
 
     override suspend fun installFromCompanionKit(
         sourcePath: String,
         expectedChecksum: String?,
     ): ModelInstallState {
-        state.value = ModelInstallState(availability = ModelAvailability.IMPORTING, message = "Importing model kit...")
-        val source = File(sourcePath)
-        if (!source.exists()) {
-            return updateFailure("Model file was not found at $sourcePath")
-        }
-
-        return runCatching {
-            val target = installedModelFile()
-            source.copyTo(target, overwrite = true)
-            val checksum = sha256(target)
-            if (expectedChecksum != null && checksum != expectedChecksum) {
-                target.delete()
-                updateFailure("Checksum mismatch for imported model.")
-            } else {
-                ModelInstallState(
-                    availability = ModelAvailability.READY,
-                    modelPath = target.absolutePath,
-                    checksum = checksum,
-                    sizeBytes = target.length(),
-                    message = "Model ready.",
-                ).also { state.value = it }
+        return installMutex.withLock {
+            state.value = ModelInstallState(availability = ModelAvailability.IMPORTING, message = "Importing model kit...")
+            val source = File(sourcePath)
+            if (!source.exists()) {
+                return@withLock updateFailure("Model file was not found at $sourcePath")
             }
-        }.getOrElse { throwable ->
-            updateFailure(throwable.message ?: "Failed to import model kit.")
+
+            return@withLock runCatching {
+                val target = installedModelFile()
+                source.copyTo(target, overwrite = true)
+                val checksum = sha256(target)
+                if (expectedChecksum != null && checksum != expectedChecksum) {
+                    target.delete()
+                    updateFailure("Checksum mismatch for imported model.")
+                } else {
+                    ModelInstallState(
+                        availability = ModelAvailability.READY,
+                        modelPath = target.absolutePath,
+                        checksum = checksum,
+                        sizeBytes = target.length(),
+                        message = "Model ready.",
+                    ).also { state.value = it }
+                }
+            }.getOrElse { throwable ->
+                updateFailure(throwable.message ?: "Failed to import model kit.")
+            }
         }
     }
 
@@ -223,6 +294,15 @@ class CompanionKitModelInstaller @Inject constructor(
     }
 
     private fun installedModelFile(): File = File(modelDirectory, MODEL_FILE_NAME)
+
+    private fun hasBundledAsset(assetPath: String): Boolean {
+        val assetDirectory = assetPath.substringBeforeLast('/', missingDelimiterValue = "")
+        val assetName = assetPath.substringAfterLast('/')
+        return runCatching {
+            val entries = if (assetDirectory.isBlank()) context.assets.list("") else context.assets.list(assetDirectory)
+            entries?.contains(assetName) == true
+        }.getOrElse { false }
+    }
 
     private fun updateFailure(message: String): ModelInstallState {
         return ModelInstallState(

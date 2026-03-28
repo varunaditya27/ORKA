@@ -200,6 +200,16 @@ class FakeModelInstaller(
 
     override fun observeState(): Flow<ModelInstallState> = state.asStateFlow()
 
+    override suspend fun installBundledModelIfAvailable(): ModelInstallState {
+        val nextState = ModelInstallState(
+            availability = ModelAvailability.READY,
+            modelPath = "/data/local/tmp/gemma-2b-int4.gguf",
+            message = "Bundled model ready.",
+        )
+        state.value = nextState
+        return nextState
+    }
+
     override suspend fun installFromCompanionKit(
         sourcePath: String,
         expectedChecksum: String?,

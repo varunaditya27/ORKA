@@ -5,13 +5,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -25,6 +21,7 @@ import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.designsystem.OrkaWordmark
 import com.orka.core.model.AlarmCapabilityState
 import com.orka.core.model.DiagnosticsRepository
+import com.orka.core.model.ModelAvailability
 import com.orka.core.model.ModelInstaller
 import com.orka.core.model.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,7 +33,8 @@ import kotlinx.coroutines.launch
 
 data class OnboardingUiState(
     val capabilityState: AlarmCapabilityState = AlarmCapabilityState.EXACT_ALARM_DENIED,
-    val modelMessage: String = "Optional: import the Gemma companion kit for on-device parsing.",
+    val modelAvailability: ModelAvailability = ModelAvailability.NOT_INSTALLED,
+    val modelMessage: String = "Bundled model will be prepared automatically.",
     val onboardingComplete: Boolean = false,
 )
 
@@ -53,18 +51,18 @@ class OnboardingViewModel @Inject constructor(
     ) { settings, diagnostics, modelState ->
         OnboardingUiState(
             capabilityState = diagnostics.capabilityState,
+            modelAvailability = modelState.availability,
             modelMessage = modelState.message ?: when {
-                modelState.modelPath != null -> "Model imported and ready."
-                else -> "Optional: import the Gemma companion kit for on-device parsing."
+                modelState.modelPath != null -> "Bundled model is ready."
+                else -> "Bundled model will be prepared automatically on first launch."
             },
             onboardingComplete = settings.onboardingCompleted,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OnboardingUiState())
 
-    fun importModel(path: String) {
+    fun retryBundledModelProvisioning() {
         viewModelScope.launch {
-            modelInstaller.installFromCompanionKit(path)
-            settingsRepository.update { settings -> settings.copy(importedModelPath = path) }
+            modelInstaller.installBundledModelIfAvailable()
         }
     }
 
@@ -85,7 +83,6 @@ fun OnboardingRoute(
     viewModel: OnboardingViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var modelPath by remember { mutableStateOf("model-kit/gemma-2b-int4.gguf") }
 
     OrkaSurface {
         OrkaScreenContainer(
@@ -123,16 +120,18 @@ fun OnboardingRoute(
             )
             OrkaActionButton(text = "Open OEM Settings", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY, onClick = onOpenOemSettings)
 
-            Text("4. Companion model kit", style = MaterialTheme.typography.headlineMedium)
-            Text(state.modelMessage, style = MaterialTheme.typography.bodyLarge)
-            OutlinedTextField(
-                modifier = Modifier.fillMaxWidth(),
-                value = modelPath,
-                onValueChange = { modelPath = it },
-                label = { Text("Local model path") },
+            Text("4. Bundled model", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Gemma is bundled into the install artifact for this personal ADB workflow. ORKA auto-prepares it in app storage.",
+                style = MaterialTheme.typography.bodyLarge,
             )
-            OrkaActionButton(text = "Import Model", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) {
-                viewModel.importModel(modelPath)
+            Text(state.modelMessage, style = MaterialTheme.typography.bodyLarge)
+            if (state.modelAvailability != ModelAvailability.READY) {
+                OrkaActionButton(
+                    text = "Retry Model Provisioning",
+                    emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
+                    onClick = viewModel::retryBundledModelProvisioning,
+                )
             }
 
             OrkaActionButton(text = "Finish Setup", emphasis = com.orka.core.model.ActionEmphasis.PRIMARY) {
