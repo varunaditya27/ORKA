@@ -79,6 +79,7 @@ class TaskDetailViewModel @Inject constructor(
         viewModelScope.launch {
             val updatedTask = task.copy(
                 deadline = task.deadline.plus(Duration.ofDays(1)),
+                eventStartTime = task.eventStartTime?.plus(Duration.ofDays(1)),
                 updatedAt = Instant.now(),
                 status = TaskStatus.PENDING,
             )
@@ -121,8 +122,13 @@ fun TaskDetailRoute(
                 ) {
                     item {
                         Text(task.title, style = MaterialTheme.typography.headlineLarge)
+                        Text("Type ${task.primitiveType.name}", style = MaterialTheme.typography.bodyLarge)
                         Text(task.category.name, style = MaterialTheme.typography.bodyLarge)
                         Text("Due ${task.deadline}", style = MaterialTheme.typography.titleMedium)
+                        if (task.primitiveType == com.orka.core.model.PrimitiveType.EVENT) {
+                            Text("Event ${task.eventStartTime ?: task.deadline}", style = MaterialTheme.typography.titleMedium)
+                            Text("Profile ${task.preEventProfile?.name ?: "MEETING"}", style = MaterialTheme.typography.titleMedium)
+                        }
                         Text("Effort ${task.estimatedEffortMinutes} min", style = MaterialTheme.typography.titleMedium)
                         OrkaActionButton(
                             text = "Mark Done",
