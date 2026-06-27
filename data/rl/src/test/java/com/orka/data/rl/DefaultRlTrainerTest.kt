@@ -1,23 +1,59 @@
 package com.orka.data.rl
 
+import android.content.Context
 import com.google.common.truth.Truth.assertThat
+import com.orka.core.database.InteractionDao
+import com.orka.core.database.InteractionEventEntity
+import com.orka.core.database.TaskDao
+import com.orka.core.database.TaskEntity
 import com.orka.core.model.BehaviorProfile
 import com.orka.core.model.BehaviorProfileRepository
 import com.orka.core.model.InteractionEvent
+import com.orka.core.model.InteractionType
+import com.orka.core.model.PreEventProfile
+import com.orka.core.model.PrimitiveType
 import com.orka.core.model.RlReadiness
 import com.orka.core.model.Task
 import com.orka.core.model.TaskCategory
+import com.orka.core.model.TaskStatus
 import com.orka.core.testing.TestFixtures
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.mockito.Mockito.`when`
+import org.mockito.Mockito.mock
+import java.io.File
+import java.time.Instant
 
 class DefaultRlTrainerTest {
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    private lateinit var context: Context
+    private lateinit var taskDao: TaskDao
+    private lateinit var interactionDao: InteractionDao
+
+    @Before
+    fun setUp() {
+        context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.newFolder("files"))
+        taskDao = mock(TaskDao::class.java)
+        interactionDao = mock(InteractionDao::class.java)
+    }
+
     @Test
     fun readinessStaysNotReadyWithoutEnoughData() = runBlocking {
-        val trainer = DefaultRlTrainer(FakeBehaviorProfileRepository(BehaviorProfile(totalInteractions = 10, totalCompletions = 2)))
+        val trainer = DefaultRlTrainer(
+            context = context,
+            profileRepository = FakeBehaviorProfileRepository(BehaviorProfile(totalInteractions = 10, totalCompletions = 2)),
+            taskDao = taskDao,
+            interactionDao = interactionDao
+        )
 
         val readiness = trainer.observeReadiness()
 
@@ -27,13 +63,16 @@ class DefaultRlTrainerTest {
     @Test
     fun returnsRecommendationWhenProfileIsReady() = runBlocking {
         val trainer = DefaultRlTrainer(
-            FakeBehaviorProfileRepository(
+            context = context,
+            profileRepository = FakeBehaviorProfileRepository(
                 BehaviorProfile(
                     totalInteractions = 50,
                     totalCompletions = 12,
                     categorySnoozeRates = mapOf(TaskCategory.PROFESSIONAL to 0.8f),
                 ),
             ),
+            taskDao = taskDao,
+            interactionDao = interactionDao
         )
 
         val recommendation = trainer.recommend(
@@ -56,38 +95,88 @@ class DefaultRlTrainerTest {
 
     @Test
     fun maybeTrainReturnsNotTrainedWhenProfileIsInsufficient() = runBlocking {
+        `when`(taskDao.getAllTasks()).thenReturn(emptyList())
+        `when`(interactionDao.getAllInteractions()).thenReturn(emptyList())
+
         val trainer = DefaultRlTrainer(
-            FakeBehaviorProfileRepository(
+            context = context,
+            profileRepository = FakeBehaviorProfileRepository(
                 BehaviorProfile(
                     totalInteractions = 20,
                     totalCompletions = 4,
                 ),
             ),
+            taskDao = taskDao,
+            interactionDao = interactionDao
         )
 
         val summary = trainer.maybeTrain()
 
         assertThat(summary.trained).isFalse()
-        assertThat(summary.episodesUsed).isEqualTo(4)
+        assertThat(summary.episodesUsed).isEqualTo(0)
         assertThat(summary.message).contains("Not enough data")
     }
 
     @Test
     fun maybeTrainReturnsTrainedWhenProfileIsReady() = runBlocking {
+        val now = Instant.now()
+        val task = TaskEntity(
+            id = "task1",
+            rawInput = "Task 1",
+            title = "Task 1",
+            description = "Task 1 description",
+            deadline = now.plus(java.time.Duration.ofDays(1)),
+            deadlineConfidence = 1.0f,
+            primitiveType = PrimitiveType.TASK,
+            eventStartTime = null,
+            eventDurationMinutes = null,
+            preEventProfile = null,
+            linkedEntityId = null,
+            clarificationNeeded = false,
+            clarificationReason = null,
+            resolvedTimezone = "Asia/Kolkata",
+            temporalExpressionRaw = null,
+            category = TaskCategory.PROFESSIONAL,
+            estimatedEffortMinutes = 30,
+            urgencyScore = 1.0f,
+            status = TaskStatus.COMPLETED,
+            createdAt = now,
+            updatedAt = now,
+            completedAt = now,
+            userCorrectedFields = emptySet(),
+        )
+
+        val interaction = InteractionEventEntity(
+            id = "int1",
+            taskId = "task1",
+            reminderId = "rem1",
+            type = InteractionType.MARK_DONE,
+            timestamp = now,
+            responseDelaySeconds = 10L,
+            escalationApplied = false,
+            metadata = emptyMap(),
+        )
+
+        `when`(taskDao.getAllTasks()).thenReturn(listOf(task))
+        `when`(interactionDao.getAllInteractions()).thenReturn(listOf(interaction))
+
         val trainer = DefaultRlTrainer(
-            FakeBehaviorProfileRepository(
+            context = context,
+            profileRepository = FakeBehaviorProfileRepository(
                 BehaviorProfile(
                     totalInteractions = 60,
                     totalCompletions = 15,
                 ),
             ),
+            taskDao = taskDao,
+            interactionDao = interactionDao
         )
 
         val summary = trainer.maybeTrain()
 
         assertThat(summary.trained).isTrue()
-        assertThat(summary.episodesUsed).isEqualTo(15)
-        assertThat(summary.message).contains("refreshed")
+        assertThat(summary.episodesUsed).isEqualTo(10) // 1 episode run 10 times in repeat loop
+        assertThat(summary.message).contains("successfully updated")
     }
 }
 

@@ -187,6 +187,15 @@ class OrkaAlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val reminderId = intent.getStringExtra("reminder_id") ?: return
+        val reminderAndTask = kotlinx.coroutines.runBlocking {
+            val reminder = taskRepository.getReminder(reminderId)
+            val task = reminder?.taskId?.let { taskRepository.getTask(it) }
+            reminder to task
+        }
+        val notificationText = reminderAndTask.first?.reminderLabel
+            ?: reminderAndTask.second?.title
+            ?: "Task reminder triggered"
+
         kotlinx.coroutines.runBlocking {
             taskRepository.markReminderDelivered(reminderId, Instant.now())
         }
@@ -211,7 +220,7 @@ class OrkaAlarmReceiver : BroadcastReceiver() {
         val notification = NotificationCompat.Builder(context, ORKA_ALARM_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_orka)
             .setContentTitle("ORKA")
-            .setContentText("Task reminder triggered")
+            .setContentText(notificationText)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setAutoCancel(false)

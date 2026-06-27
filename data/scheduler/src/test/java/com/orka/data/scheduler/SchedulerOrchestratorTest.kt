@@ -33,6 +33,7 @@ class SchedulerOrchestratorTest {
         val orchestrator = SchedulerOrchestrator(
             ruleBased = RuleBasedSchedulerPolicy(),
             adaptive = AdaptiveSchedulerPolicy(),
+            preEvent = PreEventSchedulerPolicy(),
             alarmRegistrar = alarmRegistrar,
             taskRepository = taskRepository,
             settingsRepository = FakeSettingsRepository(UserSettings(rlSchedulingEnabled = true, adaptiveSchedulingEnabled = true)),
@@ -60,6 +61,7 @@ class SchedulerOrchestratorTest {
         val orchestrator = SchedulerOrchestrator(
             ruleBased = RuleBasedSchedulerPolicy(),
             adaptive = AdaptiveSchedulerPolicy(),
+            preEvent = PreEventSchedulerPolicy(),
             alarmRegistrar = FakeAlarmRegistrar(),
             taskRepository = taskRepository,
             settingsRepository = FakeSettingsRepository(UserSettings(rlSchedulingEnabled = true, adaptiveSchedulingEnabled = true)),
@@ -86,6 +88,7 @@ class SchedulerOrchestratorTest {
         val orchestrator = SchedulerOrchestrator(
             ruleBased = RuleBasedSchedulerPolicy(),
             adaptive = AdaptiveSchedulerPolicy(),
+            preEvent = PreEventSchedulerPolicy(),
             alarmRegistrar = FakeAlarmRegistrar(),
             taskRepository = taskRepository,
             settingsRepository = FakeSettingsRepository(UserSettings(rlSchedulingEnabled = false, adaptiveSchedulingEnabled = true)),
@@ -113,6 +116,7 @@ class SchedulerOrchestratorTest {
         val orchestrator = SchedulerOrchestrator(
             ruleBased = RuleBasedSchedulerPolicy(),
             adaptive = AdaptiveSchedulerPolicy(),
+            preEvent = PreEventSchedulerPolicy(),
             alarmRegistrar = alarmRegistrar,
             taskRepository = taskRepository,
             settingsRepository = FakeSettingsRepository(),

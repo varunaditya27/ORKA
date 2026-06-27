@@ -65,6 +65,30 @@ enum class ParseMode {
     ERROR,
 }
 
+enum class PrimitiveType {
+    EVENT,
+    TASK,
+    DERIVED_TASK_EVENT,
+}
+
+enum class PreEventProfile {
+    MEETING,
+    EXAM,
+    APPOINTMENT,
+    TRAVEL,
+    CALL,
+    DEADLINE_EVENT,
+}
+
+enum class ClarificationReason {
+    NO_DEADLINE_DETECTED,
+    VAGUE_TEMPORAL_EXPRESSION,
+    AMBIGUOUS_DAY_REFERENCE,
+    MORNING_PASSED,
+    AMBIGUOUS_AM_PM,
+    DATE_IN_PAST,
+}
+
 enum class ActionEmphasis {
     PRIMARY,
     SECONDARY,
@@ -78,6 +102,15 @@ data class Task(
     val description: String? = null,
     val deadline: Instant,
     val deadlineConfidence: Float,
+    val primitiveType: PrimitiveType = PrimitiveType.TASK,
+    val eventStartTime: Instant? = null,
+    val eventDurationMinutes: Int? = null,
+    val preEventProfile: PreEventProfile? = null,
+    val linkedEntityId: String? = null,
+    val clarificationNeeded: Boolean = false,
+    val clarificationReason: ClarificationReason? = null,
+    val resolvedTimezone: String = "Asia/Kolkata",
+    val temporalExpressionRaw: String? = null,
     val category: TaskCategory,
     val estimatedEffortMinutes: Int,
     val urgencyScore: Float,
@@ -94,6 +127,15 @@ data class TaskDraft(
     val description: String? = null,
     val deadline: Instant? = null,
     val deadlineConfidence: Float = 0f,
+    val primitiveType: PrimitiveType = PrimitiveType.TASK,
+    val eventStartTime: Instant? = null,
+    val eventDurationMinutes: Int? = null,
+    val preEventProfile: PreEventProfile? = null,
+    val linkedEntityId: String? = null,
+    val clarificationNeeded: Boolean = false,
+    val clarificationReason: ClarificationReason? = null,
+    val resolvedTimezone: String = "Asia/Kolkata",
+    val temporalExpressionRaw: String? = null,
     val category: TaskCategory = TaskCategory.OTHER,
     val estimatedEffortMinutes: Int = 30,
     val urgencyScore: Float = 1f,
@@ -103,6 +145,7 @@ data class TaskDraft(
 
 data class TaskParseResult(
     val draft: TaskDraft,
+    val linkedDrafts: List<TaskDraft> = listOf(draft),
     val issues: List<String> = emptyList(),
 )
 
@@ -118,6 +161,10 @@ data class ReminderEvent(
     val actualFireTime: Instant? = null,
     val sequenceNumber: Int,
     val alarmManagerId: Int,
+    val primitiveType: PrimitiveType = PrimitiveType.TASK,
+    val preEventProfile: PreEventProfile? = null,
+    val minutesBeforeAnchor: Long? = null,
+    val reminderLabel: String? = null,
     val status: ReminderStatus = ReminderStatus.SCHEDULED,
     val schedulerMode: SchedulerMode = SchedulerMode.RULE_BASED,
 )
@@ -145,8 +192,8 @@ data class BehaviorProfile(
 )
 
 data class ParserContext(
-    val now: ZonedDateTime = ZonedDateTime.now(),
-    val zoneId: ZoneId = ZoneId.systemDefault(),
+    val now: ZonedDateTime = ZonedDateTime.now(ZoneId.of("Asia/Kolkata")),
+    val zoneId: ZoneId = ZoneId.of("Asia/Kolkata"),
     val domainHints: Map<String, String> = emptyMap(),
 )
 

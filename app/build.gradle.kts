@@ -12,7 +12,8 @@ import org.gradle.api.tasks.Copy
 
 val bundledModelFileName = "gemma-2b-int4.gguf"
 val bundledModelSource = rootProject.file("model-kit/$bundledModelFileName")
-val bundledModelAssetsDir = layout.buildDirectory.dir("generated/bundled-model-assets/model")
+val bundledModelAssetsRootDir = layout.buildDirectory.dir("generated/bundled-model-assets")
+val bundledModelAssetsModelDir = layout.buildDirectory.dir("generated/bundled-model-assets/model")
 
 val prepareBundledModel by tasks.registering(Copy::class) {
     group = "build setup"
@@ -20,7 +21,7 @@ val prepareBundledModel by tasks.registering(Copy::class) {
     from(rootProject.file("model-kit")) {
         include(bundledModelFileName)
     }
-    into(bundledModelAssetsDir)
+    into(bundledModelAssetsModelDir)
 }
 
 val verifyBundledModelForPackaging by tasks.registering {
@@ -79,7 +80,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            assets.srcDir(bundledModelAssetsDir)
+            assets.srcDir(bundledModelAssetsRootDir)
         }
     }
 

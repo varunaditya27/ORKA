@@ -31,6 +31,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
+    implementation(libs.mediapipe.tasks.genai)
     ksp(libs.hilt.compiler)
 
     testImplementation(projects.core.testing)

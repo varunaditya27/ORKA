@@ -10,9 +10,14 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.orka.core.model.ClarificationReason
 import com.orka.core.model.BehaviorProfile
 import com.orka.core.model.InteractionEvent
 import com.orka.core.model.InteractionType
+import com.orka.core.model.PreEventProfile
+import com.orka.core.model.PrimitiveType
 import com.orka.core.model.ReminderEvent
 import com.orka.core.model.ReminderStatus
 import com.orka.core.model.SchedulerMode
@@ -62,6 +67,29 @@ class OrkaTypeConverters {
 
     @TypeConverter
     fun toInteractionType(value: String): InteractionType = InteractionType.valueOf(value)
+
+    @TypeConverter
+    fun fromPrimitiveType(value: PrimitiveType): String = value.name
+
+    @TypeConverter
+    fun toPrimitiveType(value: String): PrimitiveType =
+        runCatching { PrimitiveType.valueOf(value) }.getOrElse { PrimitiveType.TASK }
+
+    @TypeConverter
+    fun fromPreEventProfile(value: PreEventProfile?): String? = value?.name
+
+    @TypeConverter
+    fun toPreEventProfile(value: String?): PreEventProfile? = value?.let {
+        runCatching { PreEventProfile.valueOf(it) }.getOrNull()
+    }
+
+    @TypeConverter
+    fun fromClarificationReason(value: ClarificationReason?): String? = value?.name
+
+    @TypeConverter
+    fun toClarificationReason(value: String?): ClarificationReason? = value?.let {
+        runCatching { ClarificationReason.valueOf(it) }.getOrNull()
+    }
 
     @TypeConverter
     fun fromStringSet(value: Set<String>): String = encodeStringSet(value)
@@ -190,6 +218,15 @@ data class TaskEntity(
     val description: String?,
     val deadline: Instant,
     val deadlineConfidence: Float,
+    val primitiveType: PrimitiveType,
+    val eventStartTime: Instant?,
+    val eventDurationMinutes: Int?,
+    val preEventProfile: PreEventProfile?,
+    val linkedEntityId: String?,
+    val clarificationNeeded: Boolean,
+    val clarificationReason: ClarificationReason?,
+    val resolvedTimezone: String,
+    val temporalExpressionRaw: String?,
     val category: TaskCategory,
     val estimatedEffortMinutes: Int,
     val urgencyScore: Float,
@@ -208,6 +245,10 @@ data class ReminderEventEntity(
     val actualFireTime: Instant?,
     val sequenceNumber: Int,
     val alarmManagerId: Int,
+    val primitiveType: PrimitiveType,
+    val preEventProfile: PreEventProfile?,
+    val minutesBeforeAnchor: Long?,
+    val reminderLabel: String?,
     val status: ReminderStatus,
     val schedulerMode: SchedulerMode,
 )
@@ -264,6 +305,9 @@ interface TaskDao {
 
     @Query("UPDATE tasks SET status = :status, completedAt = :completedAt, updatedAt = :updatedAt WHERE id = :taskId")
     suspend fun updateStatus(taskId: String, status: TaskStatus, completedAt: Instant?, updatedAt: Instant)
+
+    @Query("SELECT * FROM tasks")
+    suspend fun getAllTasks(): List<TaskEntity>
 }
 
 @Dao
@@ -303,6 +347,9 @@ interface InteractionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(event: InteractionEventEntity)
+
+    @Query("SELECT * FROM interactions")
+    suspend fun getAllInteractions(): List<InteractionEventEntity>
 }
 
 @Dao
@@ -340,7 +387,7 @@ interface AlarmRegistryDao {
         BehaviorProfileEntity::class,
         AlarmRegistryEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(OrkaTypeConverters::class)
@@ -352,6 +399,25 @@ abstract class OrkaDatabase : RoomDatabase() {
     abstract fun alarmRegistryDao(): AlarmRegistryDao
 }
 
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE tasks ADD COLUMN primitiveType TEXT NOT NULL DEFAULT 'TASK'")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN eventStartTime INTEGER")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN eventDurationMinutes INTEGER")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN preEventProfile TEXT")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN linkedEntityId TEXT")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN clarificationNeeded INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN clarificationReason TEXT")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN resolvedTimezone TEXT NOT NULL DEFAULT 'Asia/Kolkata'")
+        db.execSQL("ALTER TABLE tasks ADD COLUMN temporalExpressionRaw TEXT")
+
+        db.execSQL("ALTER TABLE reminders ADD COLUMN primitiveType TEXT NOT NULL DEFAULT 'TASK'")
+        db.execSQL("ALTER TABLE reminders ADD COLUMN preEventProfile TEXT")
+        db.execSQL("ALTER TABLE reminders ADD COLUMN minutesBeforeAnchor INTEGER")
+        db.execSQL("ALTER TABLE reminders ADD COLUMN reminderLabel TEXT")
+    }
+}
+
 fun TaskEntity.asExternalModel(): Task = Task(
     id = id,
     rawInput = rawInput,
@@ -359,6 +425,15 @@ fun TaskEntity.asExternalModel(): Task = Task(
     description = description,
     deadline = deadline,
     deadlineConfidence = deadlineConfidence,
+    primitiveType = primitiveType,
+    eventStartTime = eventStartTime,
+    eventDurationMinutes = eventDurationMinutes,
+    preEventProfile = preEventProfile,
+    linkedEntityId = linkedEntityId,
+    clarificationNeeded = clarificationNeeded,
+    clarificationReason = clarificationReason,
+    resolvedTimezone = resolvedTimezone,
+    temporalExpressionRaw = temporalExpressionRaw,
     category = category,
     estimatedEffortMinutes = estimatedEffortMinutes,
     urgencyScore = urgencyScore,
@@ -376,6 +451,15 @@ fun Task.asEntity(): TaskEntity = TaskEntity(
     description = description,
     deadline = deadline,
     deadlineConfidence = deadlineConfidence,
+    primitiveType = primitiveType,
+    eventStartTime = eventStartTime,
+    eventDurationMinutes = eventDurationMinutes,
+    preEventProfile = preEventProfile,
+    linkedEntityId = linkedEntityId,
+    clarificationNeeded = clarificationNeeded,
+    clarificationReason = clarificationReason,
+    resolvedTimezone = resolvedTimezone,
+    temporalExpressionRaw = temporalExpressionRaw,
     category = category,
     estimatedEffortMinutes = estimatedEffortMinutes,
     urgencyScore = urgencyScore,
@@ -393,6 +477,10 @@ fun ReminderEventEntity.asExternalModel(): ReminderEvent = ReminderEvent(
     actualFireTime = actualFireTime,
     sequenceNumber = sequenceNumber,
     alarmManagerId = alarmManagerId,
+    primitiveType = primitiveType,
+    preEventProfile = preEventProfile,
+    minutesBeforeAnchor = minutesBeforeAnchor,
+    reminderLabel = reminderLabel,
     status = status,
     schedulerMode = schedulerMode,
 )
@@ -404,6 +492,10 @@ fun ReminderEvent.asEntity(): ReminderEventEntity = ReminderEventEntity(
     actualFireTime = actualFireTime,
     sequenceNumber = sequenceNumber,
     alarmManagerId = alarmManagerId,
+    primitiveType = primitiveType,
+    preEventProfile = preEventProfile,
+    minutesBeforeAnchor = minutesBeforeAnchor,
+    reminderLabel = reminderLabel,
     status = status,
     schedulerMode = schedulerMode,
 )

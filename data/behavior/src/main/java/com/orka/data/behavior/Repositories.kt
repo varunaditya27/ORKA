@@ -3,6 +3,7 @@ package com.orka.data.behavior
 import android.content.Context
 import androidx.room.Room
 import com.orka.core.database.BehaviorProfileDao
+import com.orka.core.database.MIGRATION_1_2
 import com.orka.core.database.OrkaDatabase
 import com.orka.core.database.ReminderDao
 import com.orka.core.database.TaskDao
@@ -146,7 +147,9 @@ object DatabaseModule {
         context,
         OrkaDatabase::class.java,
         "orka.db",
-    ).fallbackToDestructiveMigration().build()
+    ).addMigrations(MIGRATION_1_2)
+        .fallbackToDestructiveMigration()
+        .build()
 
     @Provides
     fun provideTaskDao(database: OrkaDatabase): TaskDao = database.taskDao()

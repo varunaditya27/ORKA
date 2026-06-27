@@ -13,6 +13,7 @@ import com.orka.core.testing.MainDispatcherRule
 import com.orka.core.testing.TestFixtures
 import com.orka.data.execution.DefaultAlarmActionResolver
 import com.orka.data.scheduler.AdaptiveSchedulerPolicy
+import com.orka.data.scheduler.PreEventSchedulerPolicy
 import com.orka.data.scheduler.RuleBasedSchedulerPolicy
 import com.orka.data.scheduler.SchedulerOrchestrator
 import java.time.Duration
@@ -41,6 +42,7 @@ class AlarmViewModelTest {
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
                 alarmRegistrar = alarmRegistrar,
                 taskRepository = taskRepository,
                 settingsRepository = FakeSettingsRepository(),
@@ -76,6 +78,7 @@ class AlarmViewModelTest {
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
                 alarmRegistrar = FakeAlarmRegistrar(),
                 taskRepository = taskRepository,
                 settingsRepository = FakeSettingsRepository(),

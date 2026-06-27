@@ -4,12 +4,15 @@ import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.AlarmActionOption
 import com.orka.core.model.AlarmCapabilityState
 import com.orka.core.model.BehaviorProfile
+import com.orka.core.model.ClarificationReason
 import com.orka.core.model.DiagnosticsSnapshot
 import com.orka.core.model.InteractionEvent
 import com.orka.core.model.InteractionType
 import com.orka.core.model.ModelAvailability
 import com.orka.core.model.ModelInstallState
 import com.orka.core.model.ParseMode
+import com.orka.core.model.PreEventProfile
+import com.orka.core.model.PrimitiveType
 import com.orka.core.model.ReminderEvent
 import com.orka.core.model.ReminderStatus
 import com.orka.core.model.RlReadiness
@@ -34,6 +37,15 @@ object TestFixtures {
         description: String? = rawInput,
         deadline: Instant = defaultDeadline,
         deadlineConfidence: Float = 0.9f,
+        primitiveType: PrimitiveType = PrimitiveType.TASK,
+        eventStartTime: Instant? = null,
+        eventDurationMinutes: Int? = null,
+        preEventProfile: PreEventProfile? = null,
+        linkedEntityId: String? = null,
+        clarificationNeeded: Boolean = false,
+        clarificationReason: ClarificationReason? = null,
+        resolvedTimezone: String = "Asia/Kolkata",
+        temporalExpressionRaw: String? = null,
         category: TaskCategory = TaskCategory.PROFESSIONAL,
         estimatedEffortMinutes: Int = 90,
         urgencyScore: Float = 4f,
@@ -49,6 +61,15 @@ object TestFixtures {
         description = description,
         deadline = deadline,
         deadlineConfidence = deadlineConfidence,
+        primitiveType = primitiveType,
+        eventStartTime = eventStartTime,
+        eventDurationMinutes = eventDurationMinutes,
+        preEventProfile = preEventProfile,
+        linkedEntityId = linkedEntityId,
+        clarificationNeeded = clarificationNeeded,
+        clarificationReason = clarificationReason,
+        resolvedTimezone = resolvedTimezone,
+        temporalExpressionRaw = temporalExpressionRaw,
         category = category,
         estimatedEffortMinutes = estimatedEffortMinutes,
         urgencyScore = urgencyScore,
@@ -64,6 +85,15 @@ object TestFixtures {
         title: String = "Prepare presentation",
         deadline: Instant? = defaultDeadline,
         deadlineConfidence: Float = 0.9f,
+        primitiveType: PrimitiveType = PrimitiveType.TASK,
+        eventStartTime: Instant? = null,
+        eventDurationMinutes: Int? = null,
+        preEventProfile: PreEventProfile? = null,
+        linkedEntityId: String? = null,
+        clarificationNeeded: Boolean = false,
+        clarificationReason: ClarificationReason? = null,
+        resolvedTimezone: String = "Asia/Kolkata",
+        temporalExpressionRaw: String? = null,
         category: TaskCategory = TaskCategory.PROFESSIONAL,
         estimatedEffortMinutes: Int = 90,
         urgencyScore: Float = 4f,
@@ -75,6 +105,15 @@ object TestFixtures {
         description = rawInput,
         deadline = deadline,
         deadlineConfidence = deadlineConfidence,
+        primitiveType = primitiveType,
+        eventStartTime = eventStartTime,
+        eventDurationMinutes = eventDurationMinutes,
+        preEventProfile = preEventProfile,
+        linkedEntityId = linkedEntityId,
+        clarificationNeeded = clarificationNeeded,
+        clarificationReason = clarificationReason,
+        resolvedTimezone = resolvedTimezone,
+        temporalExpressionRaw = temporalExpressionRaw,
         category = category,
         estimatedEffortMinutes = estimatedEffortMinutes,
         urgencyScore = urgencyScore,
@@ -94,6 +133,10 @@ object TestFixtures {
         actualFireTime: Instant? = null,
         sequenceNumber: Int = 1,
         alarmManagerId: Int = 101,
+        primitiveType: PrimitiveType = PrimitiveType.TASK,
+        preEventProfile: PreEventProfile? = null,
+        minutesBeforeAnchor: Long? = null,
+        reminderLabel: String? = null,
         status: ReminderStatus = ReminderStatus.SCHEDULED,
         schedulerMode: SchedulerMode = SchedulerMode.RULE_BASED,
     ): ReminderEvent = ReminderEvent(
@@ -103,6 +146,10 @@ object TestFixtures {
         actualFireTime = actualFireTime,
         sequenceNumber = sequenceNumber,
         alarmManagerId = alarmManagerId,
+        primitiveType = primitiveType,
+        preEventProfile = preEventProfile,
+        minutesBeforeAnchor = minutesBeforeAnchor,
+        reminderLabel = reminderLabel,
         status = status,
         schedulerMode = schedulerMode,
     )

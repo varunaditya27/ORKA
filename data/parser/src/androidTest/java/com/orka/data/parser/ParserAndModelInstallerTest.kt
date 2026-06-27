@@ -3,9 +3,11 @@ package com.orka.data.parser
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
+import com.orka.core.model.ClarificationReason
 import com.orka.core.model.ModelAvailability
 import com.orka.core.model.ParseMode
 import com.orka.core.model.ParserContext
+import com.orka.core.model.PrimitiveType
 import java.io.File
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -95,5 +97,91 @@ class ParserAndModelInstallerTest {
         val result = installer.installBundledModelIfAvailable("model/missing-test.gguf")
 
         assertThat(result.availability).isEqualTo(ModelAvailability.NOT_INSTALLED)
+    }
+
+    @Test
+    fun meetingAtNinePmResolvesToTodayWhenFutureInIst() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val parser = DefaultTaskParser(context)
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 3, 30, 14, 35, 0, 0, zone)
+
+        val result = parser.parse(
+            rawInput = "meeting at 9pm",
+            context = ParserContext(now = now, zoneId = zone),
+        )
+
+        val expected = ZonedDateTime.of(2026, 3, 30, 21, 0, 0, 0, zone).toInstant()
+        assertThat(result.draft.primitiveType).isEqualTo(PrimitiveType.EVENT)
+        assertThat(result.draft.eventStartTime).isEqualTo(expected)
+        assertThat(result.draft.deadline).isEqualTo(expected)
+        assertThat(result.draft.clarificationNeeded).isFalse()
+    }
+
+    @Test
+    fun meetingAtNinePmResolvesToTomorrowWhenPassedInIst() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val parser = DefaultTaskParser(context)
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 3, 30, 22, 0, 0, 0, zone)
+
+        val result = parser.parse(
+            rawInput = "meeting at 9pm",
+            context = ParserContext(now = now, zoneId = zone),
+        )
+
+        val expected = ZonedDateTime.of(2026, 3, 31, 21, 0, 0, 0, zone).toInstant()
+        assertThat(result.draft.primitiveType).isEqualTo(PrimitiveType.EVENT)
+        assertThat(result.draft.deadline).isEqualTo(expected)
+        assertThat(result.draft.clarificationNeeded).isFalse()
+    }
+
+    @Test
+    fun thisFridayOnSaturdayTriggersAmbiguousDayClarification() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val parser = DefaultTaskParser(context)
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 4, 4, 9, 0, 0, 0, zone) // Saturday
+
+        val result = parser.parse(
+            rawInput = "meeting this friday at 9pm",
+            context = ParserContext(now = now, zoneId = zone),
+        )
+
+        assertThat(result.draft.primitiveType).isEqualTo(PrimitiveType.EVENT)
+        assertThat(result.draft.clarificationNeeded).isTrue()
+        assertThat(result.draft.clarificationReason).isEqualTo(ClarificationReason.AMBIGUOUS_DAY_REFERENCE)
+    }
+
+    @Test
+    fun pastTimeTodayTriggersDateInPastClarification() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val parser = DefaultTaskParser(context)
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 4, 2, 14, 35, 0, 0, zone)
+
+        val result = parser.parse(
+            rawInput = "meeting today at 9am",
+            context = ParserContext(now = now, zoneId = zone),
+        )
+
+        assertThat(result.draft.clarificationNeeded).isTrue()
+        assertThat(result.draft.clarificationReason).isEqualTo(ClarificationReason.DATE_IN_PAST)
+    }
+
+    @Test
+    fun vagueTemporalExpressionTriggersClarification() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val parser = DefaultTaskParser(context)
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 3, 30, 14, 35, 0, 0, zone)
+
+        val result = parser.parse(
+            rawInput = "pay bill soon",
+            context = ParserContext(now = now, zoneId = zone),
+        )
+
+        assertThat(result.draft.clarificationNeeded).isTrue()
+        assertThat(result.draft.clarificationReason).isEqualTo(ClarificationReason.VAGUE_TEMPORAL_EXPRESSION)
     }
 }

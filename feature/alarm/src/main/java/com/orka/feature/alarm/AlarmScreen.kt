@@ -42,6 +42,7 @@ import kotlinx.coroutines.launch
 data class AlarmUiState(
     val task: Task? = null,
     val reminderId: String? = null,
+    val reminderLabel: String? = null,
     val actions: List<AlarmActionOption> = emptyList(),
     val history: List<InteractionEvent> = emptyList(),
 )
@@ -64,6 +65,7 @@ class AlarmViewModel @Inject constructor(
             _uiState.value = AlarmUiState(
                 task = task,
                 reminderId = reminderId,
+                reminderLabel = reminder.reminderLabel,
                 actions = actionResolver.resolve(task, history, Instant.now()),
                 history = history,
             )
@@ -86,6 +88,7 @@ class AlarmViewModel @Inject constructor(
                 InteractionType.RESCHEDULE -> {
                     val updated = task.copy(
                         deadline = task.deadline.plus(Duration.ofDays(1)),
+                        eventStartTime = task.eventStartTime?.plus(Duration.ofDays(1)),
                         updatedAt = Instant.now(),
                         status = TaskStatus.PENDING,
                     )
@@ -137,7 +140,8 @@ fun AlarmRoute(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(reminderId) { viewModel.load(reminderId) }
     val task = state.task
-    val tier = task?.let { UrgencyCalculator.tier(it.deadline, Instant.now()) } ?: UrgencyTier.CALM
+    val anchor = task?.let { if (it.primitiveType == com.orka.core.model.PrimitiveType.EVENT) it.eventStartTime ?: it.deadline else it.deadline }
+    val tier = anchor?.let { UrgencyCalculator.tier(it, Instant.now()) } ?: UrgencyTier.CALM
 
     AlarmBackground(tier = tier) {
         androidx.compose.foundation.layout.Column(
@@ -151,12 +155,24 @@ fun AlarmRoute(
             ) {
                 Text("ORKA", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(task?.title ?: "Loading...", style = MaterialTheme.typography.displayLarge)
+                state.reminderLabel?.let {
+                    Text(it, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 task?.let {
-                    val delta = Duration.between(Instant.now(), it.deadline)
+                    val effectiveAnchor = if (it.primitiveType == com.orka.core.model.PrimitiveType.EVENT) {
+                        it.eventStartTime ?: it.deadline
+                    } else {
+                        it.deadline
+                    }
+                    val delta = Duration.between(Instant.now(), effectiveAnchor)
                     val dueText = if (delta.isNegative) {
                         "Overdue by ${TimeFormatter.humanizeDuration(delta.abs())}"
                     } else {
-                        "Due in ${TimeFormatter.humanizeDuration(delta)}"
+                        if (it.primitiveType == com.orka.core.model.PrimitiveType.EVENT) {
+                            "Starts in ${TimeFormatter.humanizeDuration(delta)}"
+                        } else {
+                            "Due in ${TimeFormatter.humanizeDuration(delta)}"
+                        }
                     }
                     Text(
                         dueText,
