@@ -162,11 +162,31 @@ fun OrkaApp(
                             navController.context.startActivity(intent)
                         },
                         onOpenBatterySettings = {
-                            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            navController.context.startActivity(intent)
+                            // Requests exemption for this app directly (one-tap system dialog)
+                            // instead of the generic "all apps" list, which requires the user
+                            // to find ORKA themselves. Falls back if an OEM ROM doesn't honor it.
+                            val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                .setData(Uri.parse("package:${navController.context.packageName}"))
+                            safeStartActivity(navController.context, direct) {
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            }
                         },
                         onOpenOemSettings = {
                             openDeviceSpecificOemSettings(navController.context)
+                        },
+                        onOpenFullScreenIntentSettings = {
+                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                                Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+                                    .setData(Uri.parse("package:${navController.context.packageName}"))
+                            } else {
+                                appDetailsIntent(navController.context)
+                            }
+                            safeStartActivity(navController.context, intent) { appDetailsIntent(navController.context) }
+                        },
+                        onOpenNotificationSettings = {
+                            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, navController.context.packageName)
+                            safeStartActivity(navController.context, intent) { appDetailsIntent(navController.context) }
                         },
                         onFinish = {
                             navController.navigate(CaptureRoute) {
@@ -234,6 +254,15 @@ private fun NavDestination?.isOnboarding(): Boolean = this?.hasRoute(OnboardingR
 
 private fun appDetailsIntent(context: Context): Intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
     .setData(Uri.fromParts("package", context.packageName, null))
+
+/** Launches [intent], falling back to [fallback] if the device has no activity that resolves it. */
+private fun safeStartActivity(context: Context, intent: Intent, fallback: () -> Intent) {
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        context.startActivity(fallback())
+    }
+}
 
 private fun openDeviceSpecificOemSettings(context: Context) {
     val manufacturer = Build.MANUFACTURER.lowercase()

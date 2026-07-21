@@ -1,6 +1,7 @@
 package com.orka.data.execution
 
 import com.google.common.truth.Truth.assertThat
+import com.orka.core.model.AlarmCapabilities
 import com.orka.core.model.AlarmCapabilityState
 import com.orka.core.model.ModelAvailability
 import com.orka.core.model.RlReadiness
@@ -72,5 +73,73 @@ class DiagnosticsAggregationTest {
     @Test
     fun ignoresPixelManufacturerForOemActionRequirement() {
         assertThat(requiresOemAction("Google")).isFalse()
+    }
+
+    @Test
+    fun derivesReadyWhenAllCapabilitiesGranted() {
+        val state = deriveCapabilityState(
+            AlarmCapabilities(
+                exactAlarmsGranted = true,
+                notificationsGranted = true,
+                fullScreenIntentGranted = true,
+                batteryOptimizationIgnored = true,
+                oemActionNeeded = false,
+            ),
+        )
+
+        assertThat(state).isEqualTo(AlarmCapabilityState.READY)
+    }
+
+    @Test
+    fun derivesExactAlarmDeniedWithHighestPriority() {
+        val state = deriveCapabilityState(
+            AlarmCapabilities(
+                exactAlarmsGranted = false,
+                notificationsGranted = false,
+                fullScreenIntentGranted = false,
+                batteryOptimizationIgnored = false,
+                oemActionNeeded = true,
+            ),
+        )
+
+        assertThat(state).isEqualTo(AlarmCapabilityState.EXACT_ALARM_DENIED)
+    }
+
+    @Test
+    fun derivesNotificationBlockedWhenExactAlarmsGrantedButNotificationsAreNot() {
+        val state = deriveCapabilityState(
+            AlarmCapabilities(exactAlarmsGranted = true, notificationsGranted = false),
+        )
+
+        assertThat(state).isEqualTo(AlarmCapabilityState.NOTIFICATION_BLOCKED)
+    }
+
+    @Test
+    fun derivesFullScreenIntentDeniedWhenOnlyThatCheckFails() {
+        val state = deriveCapabilityState(
+            AlarmCapabilities(
+                exactAlarmsGranted = true,
+                notificationsGranted = true,
+                fullScreenIntentGranted = false,
+                batteryOptimizationIgnored = true,
+            ),
+        )
+
+        assertThat(state).isEqualTo(AlarmCapabilityState.FULL_SCREEN_INTENT_DENIED)
+    }
+
+    @Test
+    fun derivesOemActionRequiredOnlyAfterAllOtherChecksPass() {
+        val state = deriveCapabilityState(
+            AlarmCapabilities(
+                exactAlarmsGranted = true,
+                notificationsGranted = true,
+                fullScreenIntentGranted = true,
+                batteryOptimizationIgnored = true,
+                oemActionNeeded = true,
+            ),
+        )
+
+        assertThat(state).isEqualTo(AlarmCapabilityState.OEM_ACTION_REQUIRED)
     }
 }

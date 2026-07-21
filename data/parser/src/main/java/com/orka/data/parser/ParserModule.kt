@@ -46,12 +46,56 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-private const val MODEL_FILE_NAME = "gemma-2b-int4.gguf"
-private const val BUNDLED_MODEL_ASSET_PATH = "model/$MODEL_FILE_NAME"
+private const val MODEL_FILE_NAME = "gemma-4-E4B-it.litertlm"
+private const val MODEL_MIN_VALID_SIZE_BYTES = 10 * 1024 * 1024L
+
+/**
+ * Manually `adb push`ed once to this well-known, world-readable device path — never bundled
+ * into the APK. Keeping the model out of app builds means every subsequent `assembleDebug` /
+ * `installDebug` is a lightweight APK instead of re-shipping several gigabytes each time.
+ */
+private const val DEVICE_PUSHED_MODEL_DIR = "/data/local/tmp"
+
+/**
+ * Holds a single warm [Engine] for the lifetime of the process. Engine.initialize() can take
+ * up to ~10s, so re-creating it per parse (or per ViewModel instance) would make every capture
+ * pay that cost. Guarded by a mutex since parse() may be invoked concurrently.
+ */
+private object GemmaEngineHolder {
+    private val mutex = Mutex()
+    private var engine: Engine? = null
+    private var loadedModelPath: String? = null
+
+    suspend fun getOrCreate(modelPath: String): Engine = mutex.withLock {
+        val existing = engine
+        if (existing != null && loadedModelPath == modelPath) return@withLock existing
+
+        existing?.close()
+        engine = null
+        loadedModelPath = null
+
+        val created = withContext(Dispatchers.IO) {
+            Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU())).apply { initialize() }
+        }
+        engine = created
+        loadedModelPath = modelPath
+        created
+    }
+
+    suspend fun reset() = mutex.withLock {
+        engine?.close()
+        engine = null
+        loadedModelPath = null
+    }
+}
 private val IST_ZONE_ID: ZoneId = ZoneId.of("Asia/Kolkata")
 private const val MONTH_PATTERN = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
 private val DURATION_REGEX = Regex("""\bin\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)\b""")
@@ -171,21 +215,25 @@ private data class LlmTaskDraft(
 
 class DefaultTaskParser @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val modelInstaller: ModelInstaller,
 ) : TaskParser {
     override suspend fun parse(rawInput: String, context: ParserContext): TaskParseResult {
-        val modelFile = File(this.context.filesDir, "model/$MODEL_FILE_NAME")
-        val modelInstalled = modelFile.exists() && modelFile.length() > 0L
-        val parseMode = if (modelInstalled) ParseMode.GEMMA else ParseMode.FALLBACK
+        // Re-checked (cheap: just exists()/length(), no file I/O) rather than trusting
+        // observeState()'s possibly-not-yet-initialized value, so a model pushed after app
+        // launch is picked up on the very next capture without requiring a restart.
+        val modelState = modelInstaller.installBundledModelIfAvailable()
+        val modelFile = modelState.modelPath?.let(::File)
+        val modelReady = modelState.availability == ModelAvailability.READY &&
+            modelFile != null &&
+            modelFile.exists() &&
+            modelFile.length() > MODEL_MIN_VALID_SIZE_BYTES
 
-        var parsed: List<TaskDraft>? = null
-        if (modelInstalled && modelFile.length() > 10 * 1024 * 1024L) {
-            parsed = gemmaParse(rawInput, context, modelFile)
-        }
+        val parsed = if (modelReady) gemmaParse(rawInput, context, modelFile!!) else null
 
         val finalDrafts = parsed ?: fallbackParse(
             rawInput = rawInput,
             context = context,
-            parseMode = parseMode,
+            parseMode = ParseMode.FALLBACK,
         )
 
         return TaskParseResult(
@@ -284,20 +332,21 @@ class DefaultTaskParser @Inject constructor(
         """.trimIndent()
 
         return try {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelFile.absolutePath)
-                .setMaxTokens(1024)
-                .build()
-            val inference = LlmInference.createFromOptions(this.context, options)
-            val response = withContext(Dispatchers.Default) {
-                inference.generateResponse(systemPrompt)
+            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
+            val response = engine.createConversation().use { conversation ->
+                withContext(Dispatchers.Default) {
+                    conversation.sendMessage(systemPrompt)
+                }
             }
-            parseJsonToTaskDrafts(response, rawInput)
+            parseJsonToTaskDrafts(response.asText(), rawInput)
         } catch (e: Throwable) {
             e.printStackTrace()
             null
         }
     }
+
+    private fun Message.asText(): String =
+        contents.contents.filterIsInstance<Content.Text>().joinToString(separator = "") { it.text }
 
     private fun cleanJson(input: String): String {
         var cleaned = input.trim()
@@ -872,75 +921,50 @@ class CompanionKitModelInstaller @Inject constructor(
     private val modelDirectory = File(context.filesDir, "model").apply { mkdirs() }
     private val installMutex = Mutex()
     private val installerScope = CoroutineScope(Dispatchers.IO)
-    private val state = MutableStateFlow(
-        if (installedModelFile().exists()) {
-            ModelInstallState(
-                availability = ModelAvailability.READY,
-                modelPath = installedModelFile().absolutePath,
-                sizeBytes = installedModelFile().length(),
-                message = "Bundled model ready.",
-            )
-        } else {
-            ModelInstallState()
-        },
-    )
+    private val state = MutableStateFlow(ModelInstallState())
 
     init {
-        if (!installedModelFile().exists()) {
-            installerScope.launch {
-                installBundledModelIfAvailable()
-            }
+        installerScope.launch {
+            installBundledModelIfAvailable()
         }
     }
 
     override fun observeState(): Flow<ModelInstallState> = state.asStateFlow()
 
+    /**
+     * Detects a model made available on the device without repackaging it into the APK:
+     * either a one-time `adb push <model> $DEVICE_PUSHED_MODEL_PATH`, or a prior
+     * [installFromCompanionKit] copy already sitting in app-private storage. The pushed file
+     * is used in place directly (no copy) since it's already 3+ GB — duplicating it into app
+     * storage would waste that much disk again for no benefit.
+     */
     override suspend fun installBundledModelIfAvailable(): ModelInstallState {
-        return installBundledModelIfAvailable(BUNDLED_MODEL_ASSET_PATH)
-    }
-
-    internal suspend fun installBundledModelIfAvailable(assetPath: String): ModelInstallState {
         return withContext(Dispatchers.IO) {
             installMutex.withLock {
-                val existing = installedModelFile()
-                if (existing.exists() && existing.length() > 0L) {
+                val importedCopy = installedModelFile()
+                if (importedCopy.exists() && importedCopy.length() > MODEL_MIN_VALID_SIZE_BYTES) {
                     return@withLock ModelInstallState(
                         availability = ModelAvailability.READY,
-                        modelPath = existing.absolutePath,
-                        checksum = sha256(existing),
-                        sizeBytes = existing.length(),
-                        message = "Bundled model ready.",
+                        modelPath = importedCopy.absolutePath,
+                        sizeBytes = importedCopy.length(),
+                        message = "Imported model ready.",
                     ).also { state.value = it }
                 }
 
-                if (!hasBundledAsset(assetPath)) {
+                val pushed = pushedModelFile()
+                if (!pushed.exists() || pushed.length() <= MODEL_MIN_VALID_SIZE_BYTES) {
                     return@withLock ModelInstallState(
                         availability = ModelAvailability.NOT_INSTALLED,
-                        message = "Bundled model asset not found in the app package.",
+                        message = "Push the model once via: adb push $MODEL_FILE_NAME ${pushed.path}",
                     ).also { state.value = it }
                 }
 
-                state.value = ModelInstallState(
-                    availability = ModelAvailability.IMPORTING,
-                    message = "Preparing bundled model...",
-                )
-
-                return@withLock runCatching {
-                    context.assets.open(assetPath).use { input ->
-                        existing.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    val checksum = sha256(existing)
-                    ModelInstallState(
-                        availability = ModelAvailability.READY,
-                        modelPath = existing.absolutePath,
-                        checksum = checksum,
-                        sizeBytes = existing.length(),
-                        message = "Bundled model ready.",
-                    ).also { state.value = it }
-                }.getOrElse { throwable ->
-                    existing.delete()
-                    updateFailure(throwable.message ?: "Failed to prepare bundled model.")
-                }
+                return@withLock ModelInstallState(
+                    availability = ModelAvailability.READY,
+                    modelPath = pushed.absolutePath,
+                    sizeBytes = pushed.length(),
+                    message = "Model detected at ${pushed.path}.",
+                ).also { state.value = it }
             }
         }
     }
@@ -959,6 +983,7 @@ class CompanionKitModelInstaller @Inject constructor(
 
                 return@withLock runCatching {
                     val target = installedModelFile()
+                    GemmaEngineHolder.reset()
                     source.copyTo(target, overwrite = true)
                     val checksum = sha256(target)
                     if (expectedChecksum != null && checksum != expectedChecksum) {
@@ -981,20 +1006,14 @@ class CompanionKitModelInstaller @Inject constructor(
     }
 
     override suspend fun reset() {
+        GemmaEngineHolder.reset()
         installedModelFile().delete()
         state.value = ModelInstallState()
     }
 
     private fun installedModelFile(): File = File(modelDirectory, MODEL_FILE_NAME)
 
-    private fun hasBundledAsset(assetPath: String): Boolean {
-        val assetDirectory = assetPath.substringBeforeLast('/', missingDelimiterValue = "")
-        val assetName = assetPath.substringAfterLast('/')
-        return runCatching {
-            val entries = if (assetDirectory.isBlank()) context.assets.list("") else context.assets.list(assetDirectory)
-            entries?.contains(assetName) == true
-        }.getOrElse { false }
-    }
+    private fun pushedModelFile(): File = File(DEVICE_PUSHED_MODEL_DIR, MODEL_FILE_NAME)
 
     private fun updateFailure(message: String): ModelInstallState {
         return ModelInstallState(

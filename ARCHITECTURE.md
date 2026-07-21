@@ -8,7 +8,7 @@ Deep engineering blueprint for ORKA's modular Android stack, execution runtime, 
 
 1. [Module graph](#1-module-graph)
 2. [Data and state foundations](#2-data-and-state-foundations)
-3. [Bundled model pipeline (ADB-first)](#3-bundled-model-pipeline-adb-first)
+3. [On-device model pipeline (ADB-first)](#3-on-device-model-pipeline-adb-first)
 4. [Parsing and draft generation](#4-parsing-and-draft-generation)
 5. [Scheduling stack](#5-scheduling-stack)
 6. [Alarm delivery and action surface](#6-alarm-delivery-and-action-surface)
@@ -90,23 +90,46 @@ flowchart TB
 
 ---
 
-## 3. Bundled model pipeline (ADB-first)
+## 3. On-device model pipeline (ADB-first)
 
-This repository targets **personal ADB installs**, not Play distribution.
+This repository targets **personal ADB installs**, not Play distribution. The model is
+deliberately kept out of the APK: it's pushed to the device once via `adb push`, and app
+builds stay lightweight regardless of how often the app itself is rebuilt/reinstalled.
 
-### Build-time packaging
+### Device-side placement (no build-time packaging)
 
-- Source of truth: local gitignored `model-kit/gemma-2b-int4.gguf`
-- App build copies model into generated assets under `model/`
-- Packaging/install tasks fail fast when model file is missing
-- `.gguf` is marked uncompressed in packaging config
+- Source of truth: `adb push gemma-4-E4B-it.litertlm /data/local/tmp/gemma-4-E4B-it.litertlm`,
+  a one-time manual step per device — not a Gradle task, not an APK asset.
+- `/data/local/tmp` is a world-readable location outside any app's private storage, so it
+  survives app reinstalls/updates and isn't duplicated on-disk by the app.
+- No `noCompress`/asset-packaging config needed since the model never enters the build.
 
-### First-run provisioning
+### First-run detection
 
-- `CompanionKitModelInstaller` checks app assets for bundled model
-- If found, it copies to app-managed storage: `files/model/gemma-2b-int4.gguf`
-- `ModelInstallState` transitions through `IMPORTING` → `READY` (or `FAILED`)
-- Onboarding/settings expose status + retry, without manual path entry
+- `CompanionKitModelInstaller.installBundledModelIfAvailable()` checks, in order: (1) a prior
+  `installFromCompanionKit` copy already in app-private storage, (2) the adb-pushed file at
+  `/data/local/tmp`. The pushed file is used **directly** (no copy) — duplicating a multi-GB
+  file into app storage would waste that much disk again for no benefit.
+- `ModelInstallState` transitions to `READY` once either location is found, `NOT_INSTALLED`
+  otherwise (with a message telling the user the exact `adb push` command to run).
+- `DefaultTaskParser.parse()` re-runs this cheap detection (just `exists()`/`length()`, no I/O
+  over the model bytes) on every parse call, so a model pushed after the app is already running
+  is picked up on the next capture without needing a restart.
+- Onboarding/settings expose status + a manual retry action, without requiring path entry.
+
+### Inference pipeline
+
+- Runs on `com.google.ai.edge.litertlm:litertlm-android`'s Kotlin `Engine`/`Conversation` API
+  (successor to MediaPipe `LlmInference`, which is now maintenance-only and does not gain
+  new capabilities).
+- `GemmaEngineHolder` keeps one warm `Engine` for the process lifetime — `Engine.initialize()`
+  can take up to ~10s, so it must not be rebuilt per parse call or per ViewModel instance.
+- Runs on the CPU backend (`Backend.CPU()`) for reliability; GPU/NPU backends are available in
+  the library but require additional native-library manifest entries and were not enabled here.
+- `DefaultTaskParser.parse()` only attempts Gemma inference when the installed model file is
+  above a minimum valid size threshold (10MB) — a corrupt/placeholder file transparently falls
+  back to the regex parser instead of silently reporting `ParseMode.GEMMA` without ever loading
+  a model.
 
 ### Backup stance
 

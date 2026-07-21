@@ -54,10 +54,27 @@ enum class SchedulerMode {
 enum class AlarmCapabilityState {
     READY,
     EXACT_ALARM_DENIED,
+    NOTIFICATION_BLOCKED,
+    FULL_SCREEN_INTENT_DENIED,
     BATTERY_OPTIMIZATION_ENABLED,
     OEM_ACTION_REQUIRED,
-    NOTIFICATION_BLOCKED,
 }
+
+/**
+ * Per-check breakdown backing [AlarmCapabilityState]. [AlarmCapabilityState] collapses these
+ * into a single "worst" value for warnings/summaries; UI that needs to show every check's own
+ * status independently (e.g. onboarding, where a user might need to grant several permissions
+ * in any order) should read this instead.
+ */
+data class AlarmCapabilities(
+    val exactAlarmsGranted: Boolean = false,
+    val notificationsGranted: Boolean = false,
+    // Enforced by the platform only on API 34+ (Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+    // defaults true so pre-34 devices — where this restriction doesn't exist — never show it as failing.
+    val fullScreenIntentGranted: Boolean = true,
+    val batteryOptimizationIgnored: Boolean = false,
+    val oemActionNeeded: Boolean = false,
+)
 
 enum class ParseMode {
     GEMMA,
@@ -219,6 +236,7 @@ data class TaskMetrics(
 
 data class DiagnosticsSnapshot(
     val capabilityState: AlarmCapabilityState = AlarmCapabilityState.READY,
+    val capabilities: AlarmCapabilities = AlarmCapabilities(),
     val nextReminder: ReminderEvent? = null,
     val lastFiredReminder: ReminderEvent? = null,
     val modelInstallState: ModelInstallState = ModelInstallState(),

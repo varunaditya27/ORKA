@@ -44,13 +44,13 @@ ORKA uses `AlarmManager`-driven exact alarms and an action surface designed for 
 - context-sensitive options (reschedule/snooze/split)
 - acknowledgement trail for behavior profiling
 
-### 🧠 Bundled local model (ADB workflow)
+### 🧠 On-device model (push once, build light)
 
-For personal installs, the model is packaged from your local `model-kit/` during build.
+The model is **not** bundled into the APK. Push `gemma-4-E4B-it.litertlm` to the device once via `adb push` (see Quick start below); ORKA detects it at that fixed path directly and runs inference through the LiteRT-LM Kotlin `Engine`/`Conversation` API (`com.google.ai.edge.litertlm:litertlm-android`) — no MediaPipe `LlmInference` dependency required.
 
-- No manual model-path typing during onboarding.
-- Automatic first-run provisioning into app storage.
-- Fallback parsing remains available if model provisioning fails.
+- The model survives app reinstalls/updates — it's outside the app's own storage and outside the APK, so every subsequent `assembleDebug`/`installDebug` is a lightweight build.
+- No manual model-path typing during onboarding; ORKA re-checks automatically.
+- Fallback parsing remains available if the model isn't present or fails to load.
 
 ### 📱 OEM-aware reliability posture
 
@@ -84,25 +84,29 @@ flowchart LR
 - Android device/emulator on API 31+
 - `adb` available in your shell
 
-### 📦 1) Place the model file
-
-Copy your model to:
-
-- `model-kit/gemma-2b-int4.gguf`
-
-> Packaging/install tasks fail fast if this file is missing.
-
-### 🛠️ 2) Build and install
+### 🛠️ 1) Build and install the app
 
 ```bash
 ./gradlew :app:assembleDebug
 ./gradlew :app:installDebug
 ```
 
+This APK does **not** contain the model, so it stays small and every rebuild/reinstall is fast.
+
+### 📦 2) Push the model to the device — once
+
+```bash
+adb push gemma-4-E4B-it.litertlm /data/local/tmp/gemma-4-E4B-it.litertlm
+```
+
+You only need to do this once per device (it survives app reinstalls, since it lives outside
+the app's own storage). If you rebuild/reinstall the app afterward, no re-push is needed.
+
 ### 🎬 3) First launch behavior
 
-- ORKA auto-provisions the bundled model to app-managed storage.
-- Onboarding shows model status (no manual path input required).
+- ORKA detects the pushed model at `/data/local/tmp/gemma-4-E4B-it.litertlm` automatically.
+- Onboarding/Settings show model status and a "Retry Model Provisioning" action if you push
+  the file after the app is already running.
 
 ---
 
@@ -136,7 +140,6 @@ For best reminder delivery on OnePlus/OxygenOS:
 
 - Product and usage (this file): `README.md`
 - Engineering blueprint: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- Local model setup details: `model-kit/README.md`
 
 ---
 
@@ -144,7 +147,7 @@ For best reminder delivery on OnePlus/OxygenOS:
 
 - Distribution target: **personal ADB installs**
 - Play Store delivery: **out of scope** for this workflow
-- Model source of truth: local gitignored `model-kit/`
+- Model source of truth: pushed once to `/data/local/tmp/gemma-4-E4B-it.litertlm` on-device (never bundled into the APK)
 
 ---
 

@@ -19,13 +19,13 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ParserAndModelInstallerTest {
     private fun modelFile(context: android.content.Context): File =
-        File(context.filesDir, "model/gemma-2b-int4.gguf")
+        File(context.filesDir, "model/gemma-4-E4B-it.litertlm")
 
     @Test
     fun parseFallsBackWhenModelIsMissing() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         modelFile(context).delete()
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
 
         val result = parser.parse(
             rawInput = "Prepare presentation by tomorrow evening",
@@ -40,13 +40,15 @@ class ParserAndModelInstallerTest {
     }
 
     @Test
-    fun parseUsesGemmaModeWhenModelExists() = runBlocking {
+    fun parseFallsBackWhenModelFileIsBelowMinimumValidSize() = runBlocking {
+        // A placeholder/corrupt file below the 10MB validity threshold must never be treated as a
+        // usable model — this used to report ParseMode.GEMMA without ever loading an engine.
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val model = modelFile(context).apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(9, 8, 7, 6))
         }
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
 
         val result = parser.parse(
             rawInput = "Prepare presentation by tomorrow evening",
@@ -56,7 +58,7 @@ class ParserAndModelInstallerTest {
             ),
         )
 
-        assertThat(result.draft.parseMode).isEqualTo(ParseMode.GEMMA)
+        assertThat(result.draft.parseMode).isEqualTo(ParseMode.FALLBACK)
 
         model.delete()
     }
@@ -64,7 +66,7 @@ class ParserAndModelInstallerTest {
     @Test
     fun modelInstallerCopiesLocalCompanionKit() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val source = File(context.cacheDir, "gemma-test.gguf").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val source = File(context.cacheDir, "gemma-test.litertlm").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
         val installer = CompanionKitModelInstaller(context)
 
         val result = installer.installFromCompanionKit(source.absolutePath)
@@ -83,18 +85,20 @@ class ParserAndModelInstallerTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val installer = CompanionKitModelInstaller(context)
 
-        val result = installer.installFromCompanionKit(File(context.cacheDir, "missing.gguf").absolutePath)
+        val result = installer.installFromCompanionKit(File(context.cacheDir, "missing.litertlm").absolutePath)
 
         assertThat(result.availability).isEqualTo(ModelAvailability.FAILED)
     }
 
     @Test
-    fun bundledInstallReportsNotInstalledWhenAssetMissing() = runBlocking {
+    fun detectReportsNotInstalledWhenNeitherImportedNorPushedModelExists() = runBlocking {
+        // No adb-pushed model at /data/local/tmp and no prior companion-kit import: the model
+        // is no longer bundled into the APK, so this is the expected out-of-the-box state.
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         modelFile(context).delete()
         val installer = CompanionKitModelInstaller(context)
 
-        val result = installer.installBundledModelIfAvailable("model/missing-test.gguf")
+        val result = installer.installBundledModelIfAvailable()
 
         assertThat(result.availability).isEqualTo(ModelAvailability.NOT_INSTALLED)
     }
@@ -102,7 +106,7 @@ class ParserAndModelInstallerTest {
     @Test
     fun meetingAtNinePmResolvesToTodayWhenFutureInIst() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
         val zone = ZoneId.of("Asia/Kolkata")
         val now = ZonedDateTime.of(2026, 3, 30, 14, 35, 0, 0, zone)
 
@@ -121,7 +125,7 @@ class ParserAndModelInstallerTest {
     @Test
     fun meetingAtNinePmResolvesToTomorrowWhenPassedInIst() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
         val zone = ZoneId.of("Asia/Kolkata")
         val now = ZonedDateTime.of(2026, 3, 30, 22, 0, 0, 0, zone)
 
@@ -139,7 +143,7 @@ class ParserAndModelInstallerTest {
     @Test
     fun thisFridayOnSaturdayTriggersAmbiguousDayClarification() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
         val zone = ZoneId.of("Asia/Kolkata")
         val now = ZonedDateTime.of(2026, 4, 4, 9, 0, 0, 0, zone) // Saturday
 
@@ -156,7 +160,7 @@ class ParserAndModelInstallerTest {
     @Test
     fun pastTimeTodayTriggersDateInPastClarification() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
         val zone = ZoneId.of("Asia/Kolkata")
         val now = ZonedDateTime.of(2026, 4, 2, 14, 35, 0, 0, zone)
 
@@ -172,7 +176,7 @@ class ParserAndModelInstallerTest {
     @Test
     fun vagueTemporalExpressionTriggersClarification() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val parser = DefaultTaskParser(context)
+        val parser = DefaultTaskParser(context, CompanionKitModelInstaller(context))
         val zone = ZoneId.of("Asia/Kolkata")
         val now = ZonedDateTime.of(2026, 3, 30, 14, 35, 0, 0, zone)
 

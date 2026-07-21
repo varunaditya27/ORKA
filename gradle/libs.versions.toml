@@ -1,14 +1,14 @@
 [versions]
-agp = "8.8.2"
-kotlin = "2.1.20"
-ksp = "2.1.20-1.0.31"
-hilt = "2.56.2"
+agp = "8.13.0"
+kotlin = "2.3.20"
+ksp = "2.3.7"
+hilt = "2.58"
 androidxCore = "1.15.0"
 androidxSplashscreen = "1.0.1"
 lifecycle = "2.10.0"
 activityCompose = "1.10.1"
 navigation = "2.9.7"
-room = "2.6.1"
+room = "2.8.1"
 datastore = "1.2.1"
 work = "2.10.0"
 coroutines = "1.9.0"
@@ -65,7 +65,7 @@ androidx-hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-com
 
 hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
 hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
-mediapipe-tasks-genai = { module = "com.google.mediapipe:tasks-genai", version = "0.10.14" }
+litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version = "0.13.1" }
 
 androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "profileinstaller" }
 androidx-benchmark-macro-junit4 = { module = "androidx.benchmark:benchmark-macro-junit4", version.ref = "benchmarkMacro" }

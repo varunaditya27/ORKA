@@ -3,6 +3,7 @@ package com.orka.data.execution
 import android.app.AlarmManager
 import android.app.NotificationManager
 import android.content.Context
+import android.os.Build
 import android.os.PowerManager
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -10,6 +11,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.orka.core.model.AlarmCapabilities
 import com.orka.core.model.AlarmCapabilityState
 import com.orka.core.model.DiagnosticsRepository
 import com.orka.core.model.DiagnosticsSnapshot
@@ -105,9 +107,11 @@ class DefaultDiagnosticsRepository @Inject constructor(
         modelInstaller.observeState(),
         rlTrainer.observeReadiness(),
     ) { nextReminder, lastTriggeredReminder, settings, modelState, readiness ->
-        val capabilityState = capabilityState(context, alarmManager, notificationManager)
+        val capabilities = queryAlarmCapabilities(context, alarmManager, notificationManager)
+        val capabilityState = deriveCapabilityState(capabilities)
         DiagnosticsSnapshot(
             capabilityState = capabilityState,
+            capabilities = capabilities,
             nextReminder = nextReminder,
             lastFiredReminder = lastTriggeredReminder,
             modelInstallState = modelState,
@@ -148,20 +152,35 @@ internal fun requiresOemAction(manufacturer: String): Boolean {
         normalized.contains("oplus")
 }
 
-private fun capabilityState(
+private fun queryAlarmCapabilities(
     context: Context,
     alarmManager: AlarmManager,
     notificationManager: NotificationManager,
-): AlarmCapabilityState {
-    if (!alarmManager.canScheduleExactAlarms()) return AlarmCapabilityState.EXACT_ALARM_DENIED
-    if (!notificationManager.areNotificationsEnabled()) return AlarmCapabilityState.NOTIFICATION_BLOCKED
+): AlarmCapabilities {
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-    if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) return AlarmCapabilityState.BATTERY_OPTIMIZATION_ENABLED
-    return if (requiresOemAction(android.os.Build.MANUFACTURER)) {
-        AlarmCapabilityState.OEM_ACTION_REQUIRED
-    } else {
-        AlarmCapabilityState.READY
-    }
+    // NotificationManager.canUseFullScreenIntent() is only enforced by the platform from
+    // API 34 onward (Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT); without this check,
+    // ORKA's lockscreen alarm interrupt silently degrades to a normal heads-up notification
+    // on Android 14+ instead of launching AlarmActivity full-screen.
+    val fullScreenIntentGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+        notificationManager.canUseFullScreenIntent()
+
+    return AlarmCapabilities(
+        exactAlarmsGranted = alarmManager.canScheduleExactAlarms(),
+        notificationsGranted = notificationManager.areNotificationsEnabled(),
+        fullScreenIntentGranted = fullScreenIntentGranted,
+        batteryOptimizationIgnored = powerManager.isIgnoringBatteryOptimizations(context.packageName),
+        oemActionNeeded = requiresOemAction(Build.MANUFACTURER),
+    )
+}
+
+internal fun deriveCapabilityState(capabilities: AlarmCapabilities): AlarmCapabilityState = when {
+    !capabilities.exactAlarmsGranted -> AlarmCapabilityState.EXACT_ALARM_DENIED
+    !capabilities.notificationsGranted -> AlarmCapabilityState.NOTIFICATION_BLOCKED
+    !capabilities.fullScreenIntentGranted -> AlarmCapabilityState.FULL_SCREEN_INTENT_DENIED
+    !capabilities.batteryOptimizationIgnored -> AlarmCapabilityState.BATTERY_OPTIMIZATION_ENABLED
+    capabilities.oemActionNeeded -> AlarmCapabilityState.OEM_ACTION_REQUIRED
+    else -> AlarmCapabilityState.READY
 }
 
 @Module

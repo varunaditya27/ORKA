@@ -19,10 +19,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
+
 
 dependencies {
     implementation(projects.core.common)
@@ -31,7 +35,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
-    implementation(libs.mediapipe.tasks.genai)
+    implementation(libs.litertlm.android)
     ksp(libs.hilt.compiler)
 
     testImplementation(projects.core.testing)

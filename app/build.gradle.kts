@@ -7,36 +7,6 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
-import org.gradle.api.GradleException
-import org.gradle.api.tasks.Copy
-
-val bundledModelFileName = "gemma-2b-int4.gguf"
-val bundledModelSource = rootProject.file("model-kit/$bundledModelFileName")
-val bundledModelAssetsRootDir = layout.buildDirectory.dir("generated/bundled-model-assets")
-val bundledModelAssetsModelDir = layout.buildDirectory.dir("generated/bundled-model-assets/model")
-
-val prepareBundledModel by tasks.registering(Copy::class) {
-    group = "build setup"
-    description = "Copies local bundled Gemma model into generated app assets."
-    from(rootProject.file("model-kit")) {
-        include(bundledModelFileName)
-    }
-    into(bundledModelAssetsModelDir)
-}
-
-val verifyBundledModelForPackaging by tasks.registering {
-    group = "verification"
-    description = "Fails packaging/install if the local bundled model is missing."
-    doLast {
-        if (!bundledModelSource.exists()) {
-            throw GradleException(
-                "Bundled model missing: ${bundledModelSource.absolutePath}. " +
-                    "Place '$bundledModelFileName' in the root 'model-kit/' directory before assembling/installing APKs.",
-            )
-        }
-    }
-}
-
 android {
     namespace = "com.orka.app"
     compileSdk = 35
@@ -69,23 +39,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
-    }
-
-    sourceSets {
-        getByName("main") {
-            assets.srcDir(bundledModelAssetsRootDir)
-        }
-    }
-
-    androidResources {
-        noCompress += "gguf"
     }
 
     packaging {
@@ -99,22 +55,10 @@ android {
     }
 }
 
-tasks.matching {
-    it.name in setOf(
-        "mergeDebugAssets",
-        "mergeReleaseAssets",
-        "packageDebug",
-        "packageRelease",
-        "bundleDebug",
-        "bundleRelease",
-        "assembleDebug",
-        "assembleRelease",
-        "installDebug",
-        "installRelease",
-    )
-}.configureEach {
-    dependsOn(prepareBundledModel)
-    dependsOn(verifyBundledModelForPackaging)
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 dependencies {

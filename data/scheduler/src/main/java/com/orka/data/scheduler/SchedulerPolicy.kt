@@ -224,7 +224,7 @@ class AdaptiveSchedulerPolicy @Inject constructor() : SchedulerPolicy {
     }
 
     private fun alignToProductiveWindow(time: Instant, profile: BehaviorProfile): Instant {
-        val zoned = time.atZone(java.time.ZoneId.systemDefault())
+        val zoned = time.atZone(IST_ZONE_ID)
         val adjustedHour = zoned.hour.coerceIn(profile.productiveStartHour, profile.productiveEndHour)
         return zoned.withHour(adjustedHour).withMinute(0).withSecond(0).toInstant()
     }

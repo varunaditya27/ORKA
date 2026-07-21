@@ -34,7 +34,7 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val settings: UserSettings = UserSettings(),
     val modelAvailability: ModelAvailability = ModelAvailability.NOT_INSTALLED,
-    val modelMessage: String = "Bundled model unavailable",
+    val modelMessage: String = "Model not detected",
 )
 
 @HiltViewModel
@@ -49,7 +49,7 @@ class SettingsViewModel @Inject constructor(
         SettingsUiState(
             settings = settings,
             modelAvailability = modelState.availability,
-            modelMessage = modelState.message ?: modelState.modelPath ?: "Bundled model unavailable",
+            modelMessage = modelState.message ?: modelState.modelPath ?: "Model not detected",
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
@@ -110,9 +110,9 @@ fun SettingsRoute(
                 OrkaActionButton(text = "Light", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) { viewModel.toggleDarkMode(false) }
             }
 
-            Text("Bundled model", style = MaterialTheme.typography.headlineMedium)
+            Text("On-device model", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Model provisioning is automatic for local ADB installs.",
+                "Push the model once via \"adb push gemma-4-E4B-it.litertlm /data/local/tmp/\" — ORKA detects it there directly, no need to resend it after app updates.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

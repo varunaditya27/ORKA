@@ -159,10 +159,30 @@ class AlarmManagerRegistrar @Inject constructor(
     }
 
     override suspend fun refreshAll() {
-        val reminders = registryDao.getAll().mapNotNull { entity ->
-            taskRepository.getReminder(entity.reminderId)
+        // Runs on every boot and periodically via AlarmRefreshWorker. Registry rows for
+        // reminders that already fired or whose time has passed must be pruned rather than
+        // re-registered — otherwise setExactAndAllowWhileIdle() fires them again immediately.
+        val now = Instant.now()
+        val entities = registryDao.getAll()
+        val remindersToRegister = mutableListOf<ReminderEvent>()
+        val staleReminderIds = mutableListOf<String>()
+
+        entities.forEach { entity ->
+            val reminder = taskRepository.getReminder(entity.reminderId)
+            if (reminder != null &&
+                reminder.status == com.orka.core.model.ReminderStatus.SCHEDULED &&
+                reminder.scheduledTime.isAfter(now)
+            ) {
+                remindersToRegister += reminder
+            } else {
+                staleReminderIds += entity.reminderId
+            }
         }
-        register(reminders)
+
+        staleReminderIds.forEach { registryDao.deleteByReminder(it) }
+        if (remindersToRegister.isNotEmpty()) {
+            register(remindersToRegister)
+        }
     }
 
     private fun createChannel() {

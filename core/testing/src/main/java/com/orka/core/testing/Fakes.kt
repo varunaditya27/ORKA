@@ -203,8 +203,8 @@ class FakeModelInstaller(
     override suspend fun installBundledModelIfAvailable(): ModelInstallState {
         val nextState = ModelInstallState(
             availability = ModelAvailability.READY,
-            modelPath = "/data/local/tmp/gemma-2b-int4.gguf",
-            message = "Bundled model ready.",
+            modelPath = "/data/local/tmp/gemma-4-E4B-it.litertlm",
+            message = "Model ready.",
         )
         state.value = nextState
         return nextState
