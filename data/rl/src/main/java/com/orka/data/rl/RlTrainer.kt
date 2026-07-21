@@ -87,6 +87,9 @@ class DefaultRlTrainer @Inject constructor(
                     when (nextInt.type) {
                         InteractionType.START_TASK -> r += 2.0f
                         InteractionType.IGNORE -> r -= 0.5f
+                        // A stronger negative signal than a snooze/ignore: the user gave up on
+                        // the task entirely rather than just delaying it.
+                        InteractionType.DISMISS_TASK -> r -= 1.0f
                         else -> {
                             if (nextInt.type.name.startsWith("SNOOZE")) {
                                 r -= 0.5f

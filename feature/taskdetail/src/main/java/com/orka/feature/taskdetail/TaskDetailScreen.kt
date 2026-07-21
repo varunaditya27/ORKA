@@ -102,6 +102,17 @@ class TaskDetailViewModel @Inject constructor(
             schedulerOrchestrator.persistSchedule(updatedTask.id, reminders)
         }
     }
+
+    fun dismissTask() {
+        val task = uiState.value.task ?: return
+        viewModelScope.launch {
+            taskRepository.updateTaskStatus(task.id, TaskStatus.DISMISSED, Instant.now())
+            schedulerOrchestrator.persistSchedule(task.id, emptyList())
+            val event = InteractionEvent(taskId = task.id, type = InteractionType.DISMISS_TASK)
+            taskRepository.recordInteraction(event)
+            behaviorProfileRepository.updateFromInteraction(task, event)
+        }
+    }
 }
 
 @Composable
@@ -140,16 +151,23 @@ fun TaskDetailRoute(
                             Text("Profile ${task.preEventProfile?.name ?: "MEETING"}", style = MaterialTheme.typography.titleMedium)
                         }
                         Text("Effort ${task.estimatedEffortMinutes} min", style = MaterialTheme.typography.titleMedium)
-                        OrkaActionButton(
-                            text = "Mark Done",
-                            emphasis = com.orka.core.model.ActionEmphasis.PRIMARY,
-                            onClick = viewModel::markDone,
-                        )
-                        OrkaActionButton(
-                            text = "Reschedule +1 day",
-                            emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
-                            onClick = viewModel::rescheduleOneDay,
-                        )
+                        if (task.status != TaskStatus.COMPLETED && task.status != TaskStatus.DISMISSED) {
+                            OrkaActionButton(
+                                text = "Mark Done",
+                                emphasis = com.orka.core.model.ActionEmphasis.PRIMARY,
+                                onClick = viewModel::markDone,
+                            )
+                            OrkaActionButton(
+                                text = "Reschedule +1 day",
+                                emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
+                                onClick = viewModel::rescheduleOneDay,
+                            )
+                            OrkaActionButton(
+                                text = "Dismiss task",
+                                emphasis = com.orka.core.model.ActionEmphasis.TERTIARY,
+                                onClick = viewModel::dismissTask,
+                            )
+                        }
                         Text("Upcoming reminders", style = MaterialTheme.typography.headlineMedium)
                     }
                     items(state.reminders, key = { it.id }) { reminder ->

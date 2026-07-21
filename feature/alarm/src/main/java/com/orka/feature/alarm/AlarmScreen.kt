@@ -28,6 +28,7 @@ import com.orka.core.model.InteractionEvent
 import com.orka.core.model.InteractionType
 import com.orka.core.model.Task
 import com.orka.core.model.TaskRepository
+import com.orka.core.model.TaskSplitter
 import com.orka.core.model.TaskStatus
 import com.orka.data.scheduler.SchedulerOrchestrator
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -46,6 +47,7 @@ data class AlarmUiState(
     val reminderLabel: String? = null,
     val actions: List<AlarmActionOption> = emptyList(),
     val history: List<InteractionEvent> = emptyList(),
+    val isProcessingSplit: Boolean = false,
 )
 
 @HiltViewModel
@@ -54,6 +56,7 @@ class AlarmViewModel @Inject constructor(
     private val behaviorProfileRepository: BehaviorProfileRepository,
     private val actionResolver: AlarmActionResolver,
     private val schedulerOrchestrator: SchedulerOrchestrator,
+    private val taskSplitter: TaskSplitter,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AlarmUiState())
     val uiState = _uiState.asStateFlow()
@@ -113,7 +116,14 @@ class AlarmViewModel @Inject constructor(
                 InteractionType.SNOOZE_SHORT -> scheduleSnooze(task, Duration.ofMinutes(30))
                 InteractionType.SNOOZE_LONG -> scheduleSnooze(task, Duration.ofHours(3))
                 InteractionType.SNOOZE_CUSTOM -> scheduleSnooze(task, Duration.ofHours(6))
-                InteractionType.SPLIT_TASK -> splitTask(task)
+                InteractionType.SPLIT_TASK -> {
+                    _uiState.value = _uiState.value.copy(isProcessingSplit = true)
+                    splitTask(task)
+                }
+                InteractionType.DISMISS_TASK -> {
+                    taskRepository.updateTaskStatus(task.id, TaskStatus.DISMISSED, Instant.now())
+                    schedulerOrchestrator.persistSchedule(task.id, emptyList())
+                }
                 InteractionType.ACKNOWLEDGE,
                 InteractionType.IGNORE,
                 -> Unit
@@ -138,26 +148,47 @@ class AlarmViewModel @Inject constructor(
 
     /**
      * Breaks a large task into two smaller, independently-scheduled follow-ups instead of one
-     * intimidating block: the first half is due at the midpoint between now and the original
-     * deadline (so it gets its own earlier pressure), the second half keeps the original
-     * deadline. The original task is retired (DISMISSED, reminders cancelled) since it's now
-     * represented by the two parts, which share [Task.linkedEntityId] so TaskDetail/Archive can
-     * still show them as related.
+     * intimidating block. Prefers [TaskSplitter] for a breakdown specific to what the task
+     * actually is (e.g. "Gather data and outline" / "Write and format final report" rather than
+     * generic "Part 1"/"Part 2") and falls back to a mechanical even split — exactly like
+     * [com.orka.core.model.TaskParser] falls back to regex parsing — whenever the model isn't
+     * ready or its suggestion doesn't parse. Either way: the first half is due at the midpoint
+     * between now and the original deadline (its own earlier pressure), the second half keeps
+     * the original deadline. The original task is retired (DISMISSED, reminders cancelled) since
+     * it's now represented by the two parts, which share [Task.linkedEntityId] so TaskDetail/
+     * Archive can still show them as related — reusing the task's existing link id rather than
+     * minting a new one if it already had one (e.g. it was itself a DERIVED_TASK_EVENT prep-task
+     * half), so splitting doesn't silently sever that relationship.
      */
     private suspend fun splitTask(task: Task) {
         val now = Instant.now()
         val totalEffort = task.estimatedEffortMinutes.coerceAtLeast(2)
-        val firstEffort = (totalEffort / 2).coerceAtLeast(1)
-        val secondEffort = totalEffort - firstEffort
+        val suggestion = runCatching { taskSplitter.suggestSplit(task) }.getOrNull()
+
+        val firstTitle: String
+        val firstEffort: Int
+        val secondTitle: String
+        val secondEffort: Int
+        if (suggestion != null) {
+            firstTitle = suggestion.firstTitle
+            firstEffort = suggestion.firstEffortMinutes
+            secondTitle = suggestion.secondTitle
+            secondEffort = suggestion.secondEffortMinutes
+        } else {
+            firstEffort = (totalEffort / 2).coerceAtLeast(1)
+            firstTitle = "${task.title} — part 1"
+            secondEffort = totalEffort - firstEffort
+            secondTitle = "${task.title} — part 2"
+        }
 
         val remaining = Duration.between(now, task.deadline)
         val midpointOffset = if (remaining.isNegative || remaining.isZero) Duration.ZERO else remaining.dividedBy(2)
         val midpointDeadline = now.plus(midpointOffset).coerceAtMost(task.deadline)
 
-        val linkId = UUID.randomUUID().toString()
+        val linkId = task.linkedEntityId ?: UUID.randomUUID().toString()
         val firstPart = task.copy(
             id = UUID.randomUUID().toString(),
-            title = "${task.title} — part 1",
+            title = firstTitle,
             deadline = midpointDeadline,
             eventStartTime = null,
             estimatedEffortMinutes = firstEffort,
@@ -170,7 +201,7 @@ class AlarmViewModel @Inject constructor(
         )
         val secondPart = task.copy(
             id = UUID.randomUUID().toString(),
-            title = "${task.title} — part 2",
+            title = secondTitle,
             deadline = task.deadline,
             eventStartTime = null,
             estimatedEffortMinutes = secondEffort,
@@ -205,6 +236,11 @@ fun AlarmRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(reminderId) { viewModel.load(reminderId) }
+    // Splitting via Gemma can take a few seconds; backing out mid-flight (ViewModel gets
+    // cleared, cancelling the in-progress coroutine) could orphan a half-completed split —
+    // e.g. the original marked DISMISSED but only one of the two new parts created. Swallow
+    // back presses for that narrow window instead.
+    androidx.activity.compose.BackHandler(enabled = state.isProcessingSplit) {}
     val task = state.task
     val anchor = task?.let { if (it.primitiveType == com.orka.core.model.PrimitiveType.EVENT) it.eventStartTime ?: it.deadline else it.deadline }
     val tier = anchor?.let { UrgencyCalculator.tier(it, Instant.now()) } ?: UrgencyTier.CALM
@@ -253,12 +289,20 @@ fun AlarmRoute(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                state.actions.forEach { action ->
-                    OrkaActionButton(
-                        text = action.label,
-                        emphasis = action.emphasis,
-                        onClick = { viewModel.handleAction(action.type, onComplete) },
+                if (state.isProcessingSplit) {
+                    Text(
+                        "Breaking this down...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                } else {
+                    state.actions.forEach { action ->
+                        OrkaActionButton(
+                            text = action.label,
+                            emphasis = action.emphasis,
+                            onClick = { viewModel.handleAction(action.type, onComplete) },
+                        )
+                    }
                 }
             }
         }

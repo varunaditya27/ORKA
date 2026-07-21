@@ -8,6 +8,7 @@ import com.orka.core.testing.FakeAlarmRegistrar
 import com.orka.core.testing.FakeBehaviorProfileRepository
 import com.orka.core.testing.FakeSettingsRepository
 import com.orka.core.testing.FakeTaskRepository
+import com.orka.core.testing.FakeTaskSplitter
 import com.orka.core.testing.FakeRlTrainer
 import com.orka.core.testing.MainDispatcherRule
 import com.orka.core.testing.TestFixtures
@@ -39,6 +40,7 @@ class AlarmViewModelTest {
             taskRepository = taskRepository,
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = DefaultAlarmActionResolver(),
+            taskSplitter = FakeTaskSplitter(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -75,6 +77,7 @@ class AlarmViewModelTest {
             taskRepository = taskRepository,
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = DefaultAlarmActionResolver(),
+            taskSplitter = FakeTaskSplitter(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -107,6 +110,52 @@ class AlarmViewModelTest {
     }
 
     @Test
+    fun splitTaskUsesGemmaSuggestionTitlesWhenAvailable() = runTest(mainDispatcherRule.dispatcher) {
+        val task = TestFixtures.task(
+            id = "task-split-gemma",
+            deadline = TestFixtures.now.plus(Duration.ofHours(100)),
+            estimatedEffortMinutes = 180,
+        )
+        val reminder = TestFixtures.reminder(id = "reminder-split-gemma", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val taskSplitter = FakeTaskSplitter(
+            nextSuggestion = com.orka.core.model.TaskSplitSuggestion(
+                firstTitle = "Gather data and outline report",
+                firstEffortMinutes = 90,
+                secondTitle = "Write and format final report",
+                secondEffortMinutes = 90,
+            ),
+        )
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = DefaultAlarmActionResolver(),
+            taskSplitter = taskSplitter,
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+        viewModel.handleAction(InteractionType.SPLIT_TASK) {}
+        advanceUntilIdle()
+
+        val parts = taskRepository.observeActiveTasks().first().filter { it.id != task.id }
+        assertThat(parts.map { it.title }).containsExactly(
+            "Gather data and outline report",
+            "Write and format final report",
+        )
+        assertThat(parts.map { it.estimatedEffortMinutes }).containsExactly(90, 90)
+    }
+
+    @Test
     fun loadExposesResolvedActionSurface() = runTest(mainDispatcherRule.dispatcher) {
         val task = TestFixtures.task(id = "task-actions", deadline = TestFixtures.now.plus(Duration.ofHours(5)))
         val reminder = TestFixtures.reminder(id = "reminder-actions", taskId = task.id)
@@ -120,6 +169,7 @@ class AlarmViewModelTest {
             taskRepository = taskRepository,
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = FakeAlarmActionResolver(expectedActions),
+            taskSplitter = FakeTaskSplitter(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),

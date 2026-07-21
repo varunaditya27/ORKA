@@ -43,6 +43,7 @@ enum class InteractionType {
     SPLIT_TASK,
     ACKNOWLEDGE,
     IGNORE,
+    DISMISS_TASK,
 }
 
 enum class SchedulerMode {
@@ -287,6 +288,18 @@ data class RlTrainingSummary(
 
 interface TaskParser {
     suspend fun parse(rawInput: String, context: ParserContext): TaskParseResult
+}
+
+data class TaskSplitSuggestion(
+    val firstTitle: String,
+    val firstEffortMinutes: Int,
+    val secondTitle: String,
+    val secondEffortMinutes: Int,
+)
+
+/** Suggests a semantically meaningful two-way breakdown of a task using the on-device model. */
+interface TaskSplitter {
+    suspend fun suggestSplit(task: Task): TaskSplitSuggestion?
 }
 
 interface TaskDraftValidator {

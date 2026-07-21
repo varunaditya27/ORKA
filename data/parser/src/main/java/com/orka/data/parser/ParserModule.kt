@@ -12,10 +12,13 @@ import com.orka.core.model.ParseMode
 import com.orka.core.model.ParserContext
 import com.orka.core.model.TaskCategory
 import com.orka.core.model.TaskDraft
+import com.orka.core.model.Task
 import com.orka.core.model.TaskDraftValidationResult
 import com.orka.core.model.TaskDraftValidator
 import com.orka.core.model.TaskParseResult
 import com.orka.core.model.TaskParser
+import com.orka.core.model.TaskSplitSuggestion
+import com.orka.core.model.TaskSplitter
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -96,6 +99,31 @@ private object GemmaEngineHolder {
         loadedModelPath = null
     }
 }
+
+private fun Message.asText(): String =
+    contents.contents.filterIsInstance<Content.Text>().joinToString(separator = "") { it.text }
+
+private fun cleanJson(input: String): String {
+    var cleaned = input.trim()
+    if (cleaned.startsWith("```")) {
+        cleaned = cleaned.substringAfter("\n")
+        if (cleaned.endsWith("```")) {
+            cleaned = cleaned.substringBeforeLast("```")
+        }
+    }
+    return cleaned.trim()
+}
+
+/** Shared by [DefaultTaskParser] and [DefaultTaskSplitter]: is the on-device model actually usable? */
+private fun resolveReadyModelFile(modelState: com.orka.core.model.ModelInstallState): File? {
+    val modelFile = modelState.modelPath?.let(::File)
+    val ready = modelState.availability == ModelAvailability.READY &&
+        modelFile != null &&
+        modelFile.exists() &&
+        modelFile.length() > MODEL_MIN_VALID_SIZE_BYTES
+    return if (ready) modelFile else null
+}
+
 private val IST_ZONE_ID: ZoneId = ZoneId.of("Asia/Kolkata")
 private const val MONTH_PATTERN = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
 private val DURATION_REGEX = Regex("""\bin\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?)\b""")
@@ -221,14 +249,9 @@ class DefaultTaskParser @Inject constructor(
         // Re-checked (cheap: just exists()/length(), no file I/O) rather than trusting
         // observeState()'s possibly-not-yet-initialized value, so a model pushed after app
         // launch is picked up on the very next capture without requiring a restart.
-        val modelState = modelInstaller.installBundledModelIfAvailable()
-        val modelFile = modelState.modelPath?.let(::File)
-        val modelReady = modelState.availability == ModelAvailability.READY &&
-            modelFile != null &&
-            modelFile.exists() &&
-            modelFile.length() > MODEL_MIN_VALID_SIZE_BYTES
+        val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable())
 
-        val parsed = if (modelReady) gemmaParse(rawInput, context, modelFile!!) else null
+        val parsed = if (modelFile != null) gemmaParse(rawInput, context, modelFile) else null
 
         val finalDrafts = parsed ?: fallbackParse(
             rawInput = rawInput,
@@ -343,20 +366,6 @@ class DefaultTaskParser @Inject constructor(
             e.printStackTrace()
             null
         }
-    }
-
-    private fun Message.asText(): String =
-        contents.contents.filterIsInstance<Content.Text>().joinToString(separator = "") { it.text }
-
-    private fun cleanJson(input: String): String {
-        var cleaned = input.trim()
-        if (cleaned.startsWith("```")) {
-            cleaned = cleaned.substringAfter("\n")
-            if (cleaned.endsWith("```")) {
-                cleaned = cleaned.substringBeforeLast("```")
-            }
-        }
-        return cleaned.trim()
     }
 
     private fun parseJsonToTaskDrafts(response: String, rawInput: String): List<TaskDraft>? {
@@ -914,6 +923,88 @@ class DefaultTaskParser @Inject constructor(
     }
 }
 
+@Serializable
+private data class LlmTaskSplit(
+    val first_title: String,
+    val first_effort_minutes: Int,
+    val second_title: String,
+    val second_effort_minutes: Int,
+)
+
+/**
+ * Elevates [SPLIT_TASK][com.orka.core.model.InteractionType.SPLIT_TASK] beyond a mechanical
+ * "divide the effort in half" by asking Gemma for a breakdown that's actually specific to the
+ * task at hand (e.g. "Prepare quarterly report" -> "Gather data and outline" / "Write and format
+ * final report" rather than generic "Part 1"/"Part 2"). Returns null whenever the model isn't
+ * ready or the response can't be parsed — callers fall back to the mechanical split, exactly
+ * like [DefaultTaskParser] falls back to regex parsing.
+ */
+class DefaultTaskSplitter @Inject constructor(
+    private val modelInstaller: ModelInstaller,
+) : TaskSplitter {
+    override suspend fun suggestSplit(task: Task): TaskSplitSuggestion? {
+        val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable()) ?: return null
+
+        val prompt = """
+            You are a task-planning assistant. Split ONE task into exactly two smaller, concrete
+            sub-tasks that together accomplish the original task. Respond with ONLY a JSON object,
+            no explanation, no markdown.
+
+            TASK: "${task.title}"
+            DETAILS: "${task.description ?: task.title}"
+            CATEGORY: ${task.category.name}
+            TOTAL ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
+
+            Fields:
+            - "first_title": short, concrete, actionable title for the first half of the work
+            - "first_effort_minutes": integer, this half's share of the total effort
+            - "second_title": short, concrete, actionable title for the second half of the work
+            - "second_effort_minutes": integer, this half's share of the total effort
+            first_effort_minutes + second_effort_minutes should add up to approximately ${task.estimatedEffortMinutes}.
+
+            Example: TASK "Prepare quarterly report" (180 minutes, PROFESSIONAL)
+            Output: {"first_title":"Gather data and outline report","first_effort_minutes":90,"second_title":"Write and format final report","second_effort_minutes":90}
+
+            Output JSON:
+        """.trimIndent()
+
+        return try {
+            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
+            val response = engine.createConversation().use { conversation ->
+                withContext(Dispatchers.Default) {
+                    conversation.sendMessage(prompt)
+                }
+            }
+            parseSplitResponse(response.asText(), task.estimatedEffortMinutes)
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun parseSplitResponse(response: String, totalEffort: Int): TaskSplitSuggestion? {
+        return try {
+            val parsed = Json { ignoreUnknownKeys = true }.decodeFromString<LlmTaskSplit>(cleanJson(response))
+            if (parsed.first_title.isBlank() || parsed.second_title.isBlank()) return null
+            if (parsed.first_effort_minutes <= 0 || parsed.second_effort_minutes <= 0) return null
+            // Sanity-check the model didn't wildly invent a total unrelated to the real one
+            // (e.g. hallucinating minutes that don't reflect the task's actual scope).
+            val suggestedTotal = parsed.first_effort_minutes + parsed.second_effort_minutes
+            if (suggestedTotal < totalEffort / 4 || suggestedTotal > totalEffort * 4) return null
+
+            TaskSplitSuggestion(
+                firstTitle = parsed.first_title.take(80),
+                firstEffortMinutes = parsed.first_effort_minutes,
+                secondTitle = parsed.second_title.take(80),
+                secondEffortMinutes = parsed.second_effort_minutes,
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+}
+
 @Singleton
 class CompanionKitModelInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -1047,6 +1138,9 @@ abstract class ParserBindingsModule {
 
     @Binds
     abstract fun bindModelInstaller(impl: CompanionKitModelInstaller): ModelInstaller
+
+    @Binds
+    abstract fun bindTaskSplitter(impl: DefaultTaskSplitter): TaskSplitter
 }
 
 @Module

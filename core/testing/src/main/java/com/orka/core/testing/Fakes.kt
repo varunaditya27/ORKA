@@ -26,6 +26,8 @@ import com.orka.core.model.TaskMetrics
 import com.orka.core.model.TaskParseResult
 import com.orka.core.model.TaskParser
 import com.orka.core.model.TaskRepository
+import com.orka.core.model.TaskSplitSuggestion
+import com.orka.core.model.TaskSplitter
 import com.orka.core.model.TaskStatus
 import com.orka.core.model.TaskDraft
 import com.orka.core.model.TaskDraftValidationResult
@@ -312,4 +314,10 @@ class FakeAlarmActionResolver(
     private val actions: List<AlarmActionOption>,
 ) : AlarmActionResolver {
     override fun resolve(task: Task, history: List<InteractionEvent>, now: Instant): List<AlarmActionOption> = actions
+}
+
+class FakeTaskSplitter(
+    var nextSuggestion: TaskSplitSuggestion? = null,
+) : TaskSplitter {
+    override suspend fun suggestSplit(task: Task): TaskSplitSuggestion? = nextSuggestion
 }
