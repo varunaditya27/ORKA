@@ -13,6 +13,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.orka.core.common.TimeFormatter
 import com.orka.core.designsystem.OrkaActionButton
 import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSurface
@@ -124,9 +125,12 @@ fun TaskDetailRoute(
                         Text(task.title, style = MaterialTheme.typography.headlineLarge)
                         Text("Type ${task.primitiveType.name}", style = MaterialTheme.typography.bodyLarge)
                         Text(task.category.name, style = MaterialTheme.typography.bodyLarge)
-                        Text("Due ${task.deadline}", style = MaterialTheme.typography.titleMedium)
+                        Text("Due ${TimeFormatter.formatInstant(task.deadline)}", style = MaterialTheme.typography.titleMedium)
                         if (task.primitiveType == com.orka.core.model.PrimitiveType.EVENT) {
-                            Text("Event ${task.eventStartTime ?: task.deadline}", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Event ${TimeFormatter.formatInstant(task.eventStartTime ?: task.deadline)}",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
                             Text("Profile ${task.preEventProfile?.name ?: "MEETING"}", style = MaterialTheme.typography.titleMedium)
                         }
                         Text("Effort ${task.estimatedEffortMinutes} min", style = MaterialTheme.typography.titleMedium)
@@ -143,13 +147,19 @@ fun TaskDetailRoute(
                         Text("Upcoming reminders", style = MaterialTheme.typography.headlineMedium)
                     }
                     items(state.reminders, key = { it.id }) { reminder ->
-                        Text("${reminder.schedulerMode.name} | ${reminder.scheduledTime}", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "${reminder.schedulerMode.name} | ${TimeFormatter.formatInstant(reminder.scheduledTime)}",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
                     }
                     item {
                         Text("Activity", style = MaterialTheme.typography.headlineMedium)
                     }
                     items(state.interactions, key = { it.id }) { event ->
-                        Text("${event.type.name} | ${event.timestamp}", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "${event.type.name} | ${TimeFormatter.formatInstant(event.timestamp)}",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
                     }
                 }
             } ?: Text("Loading task...", style = MaterialTheme.typography.bodyLarge)
