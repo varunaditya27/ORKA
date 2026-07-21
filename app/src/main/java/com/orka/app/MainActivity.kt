@@ -1,5 +1,6 @@
 package com.orka.app
 
+import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
@@ -92,7 +93,17 @@ class AlarmActivity : ComponentActivity() {
             OrkaTheme {
                 AlarmRoute(
                     reminderId = reminderId,
-                    onComplete = { finish() },
+                    onComplete = {
+                        // OrkaAlarmReceiver posts this as ongoing/non-auto-cancel (it must survive
+                        // until the user acts on it, like a real alarm) — so it has to be
+                        // explicitly dismissed here once that action is taken, using the same
+                        // notification id (reminderId.hashCode()) the receiver notified with.
+                        if (reminderId.isNotEmpty()) {
+                            (getSystemService(NOTIFICATION_SERVICE) as? NotificationManager)
+                                ?.cancel(reminderId.hashCode())
+                        }
+                        finish()
+                    },
                 )
             }
         }

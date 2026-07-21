@@ -116,18 +116,21 @@ fun OrkaActionButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    // Uses MaterialTheme.colorScheme tokens (not the raw Orka*/dark-mode color constants) so
+    // these adapt correctly when the user picks the "Light" theme in Settings — the constants
+    // are only correct for the dark palette.
     val colors = when (emphasis) {
         ActionEmphasis.PRIMARY -> ButtonDefaults.buttonColors(
-            containerColor = OrkaButtonBlue,
-            contentColor = OrkaTextPrimary,
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
         )
         ActionEmphasis.SECONDARY -> ButtonDefaults.buttonColors(
-            containerColor = OrkaDarkSurfaceRaised,
-            contentColor = OrkaTextPrimary,
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         ActionEmphasis.TERTIARY -> ButtonDefaults.buttonColors(
             containerColor = Color.Transparent,
-            contentColor = OrkaTextSecondary,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 

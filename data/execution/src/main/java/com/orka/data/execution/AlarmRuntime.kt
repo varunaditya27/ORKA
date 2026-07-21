@@ -251,7 +251,18 @@ class OrkaAlarmReceiver : BroadcastReceiver() {
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(reminderId.hashCode(), notification)
-        context.startActivity(fullScreenIntent)
+
+        // setFullScreenIntent() above is the OS-sanctioned way to force this open, and is all
+        // that's needed while the device is locked. This direct call additionally forces it open
+        // when the screen is already unlocked (where the OS would otherwise only show a heads-up
+        // notification) — but background-activity-start restrictions (Android 10+) can refuse it
+        // in some states, so it must not be allowed to crash notification delivery, which already
+        // succeeded above.
+        try {
+            context.startActivity(fullScreenIntent)
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+        }
     }
 }
 
