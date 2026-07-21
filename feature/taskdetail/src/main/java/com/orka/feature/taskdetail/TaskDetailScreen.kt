@@ -14,6 +14,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.orka.core.common.TimeFormatter
+import com.orka.core.common.UrgencyCalculator
 import com.orka.core.designsystem.OrkaActionButton
 import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSurface
@@ -78,11 +79,16 @@ class TaskDetailViewModel @Inject constructor(
     fun rescheduleOneDay() {
         val task = uiState.value.task ?: return
         viewModelScope.launch {
+            val newDeadline = task.deadline.plus(Duration.ofDays(1))
             val updatedTask = task.copy(
-                deadline = task.deadline.plus(Duration.ofDays(1)),
+                deadline = newDeadline,
                 eventStartTime = task.eventStartTime?.plus(Duration.ofDays(1)),
                 updatedAt = Instant.now(),
                 status = TaskStatus.PENDING,
+                // Must be recomputed — it drives the Tasks list sort order
+                // (`ORDER BY urgencyScore DESC`), and pushing the deadline out a day without
+                // updating it would leave the task sorted by its old, now-stale urgency.
+                urgencyScore = UrgencyCalculator.urgencyScore(newDeadline, Instant.now(), task.estimatedEffortMinutes),
             )
             taskRepository.upsertTask(updatedTask)
             val profile = behaviorProfileRepository.getProfile()

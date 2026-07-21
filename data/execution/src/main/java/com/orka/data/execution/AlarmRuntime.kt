@@ -284,9 +284,11 @@ class AlarmRefreshWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
     private val alarmRegistrar: AlarmRegistrar,
+    private val taskRepository: TaskRepository,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result = runCatching {
         alarmRegistrar.refreshAll()
+        taskRepository.markOverdueTasks(Instant.now())
         Result.success()
     }.getOrElse { Result.retry() }
 }

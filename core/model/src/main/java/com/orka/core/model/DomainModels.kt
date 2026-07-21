@@ -309,6 +309,7 @@ interface TaskRepository {
     suspend fun markReminderDelivered(reminderId: String, firedAt: Instant)
     suspend fun recordInteraction(event: InteractionEvent)
     suspend fun updateTaskStatus(taskId: String, status: TaskStatus, completedAt: Instant? = null)
+    suspend fun markOverdueTasks(now: Instant)
 }
 
 interface SchedulerPolicy {

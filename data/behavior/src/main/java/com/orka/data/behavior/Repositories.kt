@@ -95,6 +95,10 @@ class RoomTaskRepository @Inject constructor(
     override suspend fun updateTaskStatus(taskId: String, status: TaskStatus, completedAt: Instant?) {
         taskDao.updateStatus(taskId, status, completedAt, Instant.now())
     }
+
+    override suspend fun markOverdueTasks(now: Instant) {
+        taskDao.markOverdueTasks(now)
+    }
 }
 
 @Singleton

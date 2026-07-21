@@ -82,6 +82,41 @@ class OrkaDatabaseDaoTest {
     }
 
     @Test
+    fun markOverdueTasksOnlyAffectsPendingTasksPastDeadline() = runBlocking {
+        val overduePending = TestFixtures.task(
+            id = "task-overdue-pending",
+            deadline = TestFixtures.now.minusSeconds(3600),
+        )
+        val futurePending = TestFixtures.task(
+            id = "task-future-pending",
+            deadline = TestFixtures.now.plusSeconds(3600),
+        )
+        val overdueButActive = TestFixtures.task(
+            id = "task-overdue-active",
+            deadline = TestFixtures.now.minusSeconds(3600),
+            status = com.orka.core.model.TaskStatus.ACTIVE,
+        )
+        val overdueButCompleted = TestFixtures.task(
+            id = "task-overdue-completed",
+            deadline = TestFixtures.now.minusSeconds(3600),
+            status = com.orka.core.model.TaskStatus.COMPLETED,
+            completedAt = TestFixtures.now,
+        )
+
+        listOf(overduePending, futurePending, overdueButActive, overdueButCompleted).forEach {
+            database.taskDao().upsert(it.asEntity())
+        }
+
+        database.taskDao().markOverdueTasks(TestFixtures.now)
+
+        assertThat(database.taskDao().getTask(overduePending.id)?.status).isEqualTo(com.orka.core.model.TaskStatus.OVERDUE)
+        assertThat(database.taskDao().getTask(overduePending.id)?.urgencyScore).isEqualTo(5.0f)
+        assertThat(database.taskDao().getTask(futurePending.id)?.status).isEqualTo(com.orka.core.model.TaskStatus.PENDING)
+        assertThat(database.taskDao().getTask(overdueButActive.id)?.status).isEqualTo(com.orka.core.model.TaskStatus.ACTIVE)
+        assertThat(database.taskDao().getTask(overdueButCompleted.id)?.status).isEqualTo(com.orka.core.model.TaskStatus.COMPLETED)
+    }
+
+    @Test
     fun deleteScheduledForTaskRemovesOnlyScheduledEntries() = runBlocking {
         val task = TestFixtures.task(id = "task-reminders")
         val scheduled = TestFixtures.reminder(id = "scheduled-1", taskId = task.id)

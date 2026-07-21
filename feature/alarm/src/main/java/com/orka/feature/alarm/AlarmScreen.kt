@@ -33,6 +33,7 @@ import com.orka.data.scheduler.SchedulerOrchestrator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,11 +87,16 @@ class AlarmViewModel @Inject constructor(
                 }
 
                 InteractionType.RESCHEDULE -> {
+                    val newDeadline = task.deadline.plus(Duration.ofDays(1))
                     val updated = task.copy(
-                        deadline = task.deadline.plus(Duration.ofDays(1)),
+                        deadline = newDeadline,
                         eventStartTime = task.eventStartTime?.plus(Duration.ofDays(1)),
                         updatedAt = Instant.now(),
                         status = TaskStatus.PENDING,
+                        // Must be recomputed — it drives the Tasks list sort order
+                        // (`ORDER BY urgencyScore DESC`), and pushing the deadline out a day
+                        // without updating it would leave the task sorted by its old urgency.
+                        urgencyScore = UrgencyCalculator.urgencyScore(newDeadline, Instant.now(), task.estimatedEffortMinutes),
                     )
                     taskRepository.upsertTask(updated)
                     val profile = behaviorProfileRepository.getProfile()
@@ -107,7 +113,7 @@ class AlarmViewModel @Inject constructor(
                 InteractionType.SNOOZE_SHORT -> scheduleSnooze(task, Duration.ofMinutes(30))
                 InteractionType.SNOOZE_LONG -> scheduleSnooze(task, Duration.ofHours(3))
                 InteractionType.SNOOZE_CUSTOM -> scheduleSnooze(task, Duration.ofHours(6))
-                InteractionType.SPLIT_TASK -> Unit
+                InteractionType.SPLIT_TASK -> splitTask(task)
                 InteractionType.ACKNOWLEDGE,
                 InteractionType.IGNORE,
                 -> Unit
@@ -128,6 +134,66 @@ class AlarmViewModel @Inject constructor(
             alarmManagerId = (task.id.hashCode() * 31) + offset.toMinutes().toInt(),
         )
         schedulerOrchestrator.persistSchedule(task.id, listOf(reminder))
+    }
+
+    /**
+     * Breaks a large task into two smaller, independently-scheduled follow-ups instead of one
+     * intimidating block: the first half is due at the midpoint between now and the original
+     * deadline (so it gets its own earlier pressure), the second half keeps the original
+     * deadline. The original task is retired (DISMISSED, reminders cancelled) since it's now
+     * represented by the two parts, which share [Task.linkedEntityId] so TaskDetail/Archive can
+     * still show them as related.
+     */
+    private suspend fun splitTask(task: Task) {
+        val now = Instant.now()
+        val totalEffort = task.estimatedEffortMinutes.coerceAtLeast(2)
+        val firstEffort = (totalEffort / 2).coerceAtLeast(1)
+        val secondEffort = totalEffort - firstEffort
+
+        val remaining = Duration.between(now, task.deadline)
+        val midpointOffset = if (remaining.isNegative || remaining.isZero) Duration.ZERO else remaining.dividedBy(2)
+        val midpointDeadline = now.plus(midpointOffset).coerceAtMost(task.deadline)
+
+        val linkId = UUID.randomUUID().toString()
+        val firstPart = task.copy(
+            id = UUID.randomUUID().toString(),
+            title = "${task.title} — part 1",
+            deadline = midpointDeadline,
+            eventStartTime = null,
+            estimatedEffortMinutes = firstEffort,
+            status = TaskStatus.PENDING,
+            linkedEntityId = linkId,
+            urgencyScore = UrgencyCalculator.urgencyScore(midpointDeadline, now, firstEffort),
+            createdAt = now,
+            updatedAt = now,
+            completedAt = null,
+        )
+        val secondPart = task.copy(
+            id = UUID.randomUUID().toString(),
+            title = "${task.title} — part 2",
+            deadline = task.deadline,
+            eventStartTime = null,
+            estimatedEffortMinutes = secondEffort,
+            status = TaskStatus.PENDING,
+            linkedEntityId = linkId,
+            urgencyScore = UrgencyCalculator.urgencyScore(task.deadline, now, secondEffort),
+            createdAt = now,
+            updatedAt = now,
+            completedAt = null,
+        )
+
+        schedulerOrchestrator.persistSchedule(task.id, emptyList())
+        taskRepository.updateTaskStatus(task.id, TaskStatus.DISMISSED, now)
+
+        val profile = behaviorProfileRepository.getProfile()
+        listOf(firstPart, secondPart).forEach { part ->
+            val saved = taskRepository.upsertTask(part)
+            val (_, reminders) = schedulerOrchestrator.schedule(
+                saved,
+                com.orka.core.model.SchedulingContext(profile = profile, interactionHistory = emptyList(), now = now),
+            )
+            schedulerOrchestrator.persistSchedule(saved.id, reminders)
+        }
     }
 }
 

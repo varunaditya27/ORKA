@@ -62,6 +62,51 @@ class AlarmViewModelTest {
     }
 
     @Test
+    fun splitTaskRetiresOriginalAndCreatesTwoLinkedFollowUps() = runTest(mainDispatcherRule.dispatcher) {
+        val task = TestFixtures.task(
+            id = "task-split",
+            deadline = TestFixtures.now.plus(Duration.ofHours(100)),
+            estimatedEffortMinutes = 180,
+        )
+        val reminder = TestFixtures.reminder(id = "reminder-split", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val alarmRegistrar = FakeAlarmRegistrar()
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = DefaultAlarmActionResolver(),
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = alarmRegistrar,
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+        viewModel.handleAction(InteractionType.SPLIT_TASK) {}
+        advanceUntilIdle()
+
+        assertThat(taskRepository.getTask(task.id)?.status).isEqualTo(TaskStatus.DISMISSED)
+
+        val activeTasks = taskRepository.observeActiveTasks().first()
+        val parts = activeTasks.filter { it.linkedEntityId != null && it.id != task.id }
+        assertThat(parts).hasSize(2)
+        assertThat(parts.map { it.status }).containsExactly(TaskStatus.PENDING, TaskStatus.PENDING)
+        assertThat(parts[0].linkedEntityId).isEqualTo(parts[1].linkedEntityId)
+        assertThat(parts.sumOf { it.estimatedEffortMinutes }).isEqualTo(task.estimatedEffortMinutes)
+        assertThat(parts.map { it.deadline }).contains(task.deadline)
+        assertThat(parts.all { it.deadline <= task.deadline }).isTrue()
+
+        assertThat(taskRepository.observeInteractions(task.id).first().map { it.type }).contains(InteractionType.SPLIT_TASK)
+        assertThat(alarmRegistrar.cancelForTaskCalls).contains(task.id)
+    }
+
+    @Test
     fun loadExposesResolvedActionSurface() = runTest(mainDispatcherRule.dispatcher) {
         val task = TestFixtures.task(id = "task-actions", deadline = TestFixtures.now.plus(Duration.ofHours(5)))
         val reminder = TestFixtures.reminder(id = "reminder-actions", taskId = task.id)

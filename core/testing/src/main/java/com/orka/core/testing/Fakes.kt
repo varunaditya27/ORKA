@@ -140,6 +140,16 @@ class FakeTaskRepository(
             updatedAt = completedAt ?: current.updatedAt,
         ))
     }
+
+    override suspend fun markOverdueTasks(now: Instant) {
+        tasksFlow.value = tasksFlow.value.mapValues { (_, task) ->
+            if (task.status == TaskStatus.PENDING && task.deadline.isBefore(now)) {
+                task.copy(status = TaskStatus.OVERDUE, urgencyScore = 5f, updatedAt = now)
+            } else {
+                task
+            }
+        }
+    }
 }
 
 class FakeBehaviorProfileRepository(

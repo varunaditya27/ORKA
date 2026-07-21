@@ -1,5 +1,6 @@
 package com.orka.app
 
+import android.app.Activity
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
@@ -26,10 +27,13 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalView
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.WindowCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,6 +55,7 @@ import com.orka.core.model.ModelInstaller
 import com.orka.core.model.SettingsRepository
 import com.orka.core.model.SettingsRoute
 import com.orka.core.model.TaskDetailRoute
+import com.orka.core.model.TaskRepository
 import com.orka.core.model.TasksRoute
 import com.orka.core.model.UserSettings
 import com.orka.feature.alarm.AlarmRoute
@@ -124,11 +129,17 @@ data class RootUiState(
 class RootViewModel @Inject constructor(
     settingsRepository: SettingsRepository,
     modelInstaller: ModelInstaller,
+    taskRepository: TaskRepository,
 ) : ViewModel() {
 
     init {
         viewModelScope.launch {
             modelInstaller.installBundledModelIfAvailable()
+        }
+        viewModelScope.launch {
+            // AlarmRefreshWorker also does this every 6h, but that leaves a stale window right
+            // after each app open/reinstall — cheap enough to just re-check on every launch too.
+            taskRepository.markOverdueTasks(java.time.Instant.now())
         }
     }
 
@@ -146,6 +157,20 @@ fun OrkaApp(
     val onboardingCompleted = uiState.settings.onboardingCompleted
     val startRoute = if (onboardingCompleted) CaptureRoute else OnboardingRoute
     val darkTheme = uiState.settings.darkModeOverride ?: isSystemInDarkTheme()
+
+    // Theme.Orka hardcodes windowLightStatusBar/windowLightNavigationBar to false (light bar
+    // icons) identically in both values/ and values-night/ — it can't express ORKA's own
+    // Light/Dark override, which is independent of the system theme. Without this, picking
+    // "Light" in Settings would leave status/nav bar icons white-on-white and unreadable.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as Activity).window
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !darkTheme
+            insetsController.isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
 
     OrkaTheme(darkTheme = darkTheme) {
         Scaffold(

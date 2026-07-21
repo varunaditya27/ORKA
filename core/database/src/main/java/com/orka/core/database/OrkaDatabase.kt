@@ -306,6 +306,13 @@ interface TaskDao {
     @Query("UPDATE tasks SET status = :status, completedAt = :completedAt, updatedAt = :updatedAt WHERE id = :taskId")
     suspend fun updateStatus(taskId: String, status: TaskStatus, completedAt: Instant?, updatedAt: Instant)
 
+    // urgencyScore is pinned to 5 (UrgencyCalculator's ceiling) here: it drives the Tasks list
+    // sort order, and a task's stored score — computed once at creation against the deadline
+    // that was still in the future then — would otherwise stay stale (understating urgency)
+    // once that same task actually goes overdue.
+    @Query("UPDATE tasks SET status = 'OVERDUE', urgencyScore = 5.0, updatedAt = :now WHERE status = 'PENDING' AND deadline < :now")
+    suspend fun markOverdueTasks(now: Instant)
+
     @Query("SELECT * FROM tasks")
     suspend fun getAllTasks(): List<TaskEntity>
 }
