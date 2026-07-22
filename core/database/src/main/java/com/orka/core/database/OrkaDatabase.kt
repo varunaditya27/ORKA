@@ -3,6 +3,7 @@ package com.orka.core.database
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
@@ -237,7 +238,7 @@ data class TaskEntity(
     val userCorrectedFields: Set<String>,
 )
 
-@Entity(tableName = "reminders")
+@Entity(tableName = "reminders", indices = [Index("taskId")])
 data class ReminderEventEntity(
     @PrimaryKey val id: String,
     val taskId: String,
@@ -253,7 +254,7 @@ data class ReminderEventEntity(
     val schedulerMode: SchedulerMode,
 )
 
-@Entity(tableName = "interactions")
+@Entity(tableName = "interactions", indices = [Index("taskId")])
 data class InteractionEventEntity(
     @PrimaryKey val id: String,
     val taskId: String,
@@ -278,7 +279,7 @@ data class BehaviorProfileEntity(
     val categoryCompletionRates: Map<TaskCategory, Float>,
 )
 
-@Entity(tableName = "alarm_registry")
+@Entity(tableName = "alarm_registry", indices = [Index("taskId")])
 data class AlarmRegistryEntity(
     @PrimaryKey val reminderId: String,
     val taskId: String,
@@ -394,7 +395,7 @@ interface AlarmRegistryDao {
         BehaviorProfileEntity::class,
         AlarmRegistryEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(OrkaTypeConverters::class)
@@ -422,6 +423,17 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
         db.execSQL("ALTER TABLE reminders ADD COLUMN preEventProfile TEXT")
         db.execSQL("ALTER TABLE reminders ADD COLUMN minutesBeforeAnchor INTEGER")
         db.execSQL("ALTER TABLE reminders ADD COLUMN reminderLabel TEXT")
+    }
+}
+
+// Every reminders/interactions/alarm_registry query filters by taskId (observeForTask,
+// observeReminders, observeInteractions, deleteForTask, ...); without an index each of those
+// was a full table scan.
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_reminders_taskId ON reminders(taskId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_interactions_taskId ON interactions(taskId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_alarm_registry_taskId ON alarm_registry(taskId)")
     }
 }
 
