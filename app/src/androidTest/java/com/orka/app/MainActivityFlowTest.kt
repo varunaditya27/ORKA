@@ -34,7 +34,7 @@ class MainActivityFlowTest {
 
         createTaskAndOpenDetail(taskTitle)
 
-        composeRule.onNodeWithText("Reschedule +1 day", useUnmergedTree = true).performClick()
+        composeRule.onNodeWithText("Reschedule", useUnmergedTree = true).performClick()
         composeRule.onNodeWithText("Mark Done", useUnmergedTree = true).performClick()
         composeRule.waitUntilTextExists("MARK_DONE")
 
@@ -71,8 +71,10 @@ class MainActivityFlowTest {
         composeRule.waitForIdle()
 
         if (composeRule.hasText("Finish Setup")) {
-            composeRule.onNodeWithText("1. Exact alarms", useUnmergedTree = true)
-                .assert(hasText("1. Exact alarms"))
+            // Onboarding's steps are unnumbered (a numbered "1. Exact alarms" would show a visible
+            // gap whenever a conditional step, like full-screen-intent approval, is hidden).
+            composeRule.onNodeWithText("Exact alarms", useUnmergedTree = true)
+                .assert(hasText("Exact alarms"))
             composeRule.onNodeWithText("Finish Setup", useUnmergedTree = true).performClick()
         }
 

@@ -30,7 +30,9 @@ class BaselineProfileGenerator {
             device.wait(Until.hasObject(By.text("Confirm")), 3_000)
             device.findObject(By.text("Confirm"))?.click()
             device.wait(Until.hasObject(By.text("Mark Done")), 3_000)
-            device.findObject(By.text("Back"))?.click()
+            // TaskDetail's back control is an icon-only IconButton (contentDescription "Back"),
+            // not a text node — By.text("Back") can never match it and would silently no-op here.
+            device.findObject(By.desc("Back"))?.click()
             device.findObject(By.text("Settings"))?.click()
             device.wait(Until.hasObject(By.text("Adaptive scheduling")), 3_000)
         }
