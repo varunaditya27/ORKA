@@ -9,6 +9,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -40,6 +43,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -364,8 +368,27 @@ fun AlarmRoute(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (state.isProcessingSplit) {
+                    // Same reasoning as Capture's analysing indicator: the model is warmed up at
+                    // app startup, but a genuine cold load (e.g. the process was only just started
+                    // to show this alarm) can still take real-device-observed minutes rather than
+                    // seconds — and this screen's BackHandler blocks back-press the whole time, so
+                    // a silent "Breaking this down..." with no elapsed context is worse here than
+                    // on Capture, not better.
+                    var elapsedSeconds by remember { mutableIntStateOf(0) }
+                    LaunchedEffect(state.isProcessingSplit) {
+                        elapsedSeconds = 0
+                        while (true) {
+                            delay(1_000)
+                            elapsedSeconds++
+                        }
+                    }
                     Text(
-                        "Breaking this down...",
+                        text = if (elapsedSeconds < 5) {
+                            "Breaking this down..."
+                        } else {
+                            "Breaking this down... the on-device model can take a couple of " +
+                                "minutes the first time it loads (${elapsedSeconds}s so far)."
+                        },
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

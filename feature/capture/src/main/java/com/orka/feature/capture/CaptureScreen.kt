@@ -26,6 +26,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextDecoration
@@ -68,6 +71,7 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
 import javax.inject.Inject
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -777,6 +781,33 @@ fun CaptureRoute(
                 enabled = !state.isAnalyzing,
                 onClick = viewModel::analyse,
             )
+
+            if (state.isAnalyzing) {
+                // The on-device model is warmed up proactively at app startup, but the first
+                // capture shortly after launch (or after a long time away) can still hit a cold
+                // model load, which real-device testing showed can take minutes rather than
+                // seconds — without this, the button just sits on "Analysing..." with nothing to
+                // tell the user it hasn't frozen. Ticks locally rather than needing the ViewModel
+                // to track wall-clock time itself.
+                var elapsedSeconds by remember { mutableIntStateOf(0) }
+                LaunchedEffect(state.isAnalyzing) {
+                    elapsedSeconds = 0
+                    while (true) {
+                        delay(1_000)
+                        elapsedSeconds++
+                    }
+                }
+                Text(
+                    text = when {
+                        elapsedSeconds < 5 -> "Thinking…"
+                        elapsedSeconds < 20 -> "Still thinking… (${elapsedSeconds}s)"
+                        else -> "Still working — the on-device model can take a couple of minutes " +
+                            "the first time it loads (${elapsedSeconds}s so far)."
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             state.warningMessage?.let {
                 Text(
