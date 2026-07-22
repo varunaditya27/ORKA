@@ -17,6 +17,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.orka.core.designsystem.OrkaActionButton
+import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSpacing
 import com.orka.core.designsystem.OrkaSurface
@@ -98,6 +99,7 @@ fun SettingsRoute(
         OrkaScreenContainer(
             modifier = Modifier.verticalScroll(rememberScrollState()),
         ) {
+            OrkaEyebrow("Settings")
             Text("Settings", style = MaterialTheme.typography.headlineLarge)
             SettingToggle("Adaptive scheduling", state.settings.adaptiveSchedulingEnabled, viewModel::toggleAdaptive)
             SettingToggle("RL scheduling", state.settings.rlSchedulingEnabled, viewModel::toggleRl)

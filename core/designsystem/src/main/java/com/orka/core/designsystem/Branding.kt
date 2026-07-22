@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 // The orka_wordmark/orka_mark PNGs have an opaque dark-navy background baked in (no alpha
 // channel) — on the Light theme they'd otherwise render as a jarring dark rectangle. Wrapping
@@ -56,15 +57,21 @@ fun OrkaMark(
     }
 }
 
+/**
+ * A small "kicker" label shown above a screen's main title. Uppercased with letter-spacing so
+ * it visually reads as a distinct category tag rather than a duplicate of the title directly
+ * below it — several screens intentionally reuse the same word for both (e.g. eyebrow "Tasks"
+ * above headline "Tasks"), which would otherwise look like a rendering glitch.
+ */
 @Composable
 fun OrkaEyebrow(
     text: String,
     modifier: Modifier = Modifier,
 ) {
     Text(
-        text = text,
+        text = text.uppercase(),
         modifier = modifier,
-        style = MaterialTheme.typography.labelMedium,
+        style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }

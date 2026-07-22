@@ -1,13 +1,21 @@
 package com.orka.feature.taskdetail
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -15,8 +23,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.orka.core.common.TimeFormatter
 import com.orka.core.common.UrgencyCalculator
+import com.orka.core.common.displayName
 import com.orka.core.designsystem.OrkaActionButton
+import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
+import com.orka.core.designsystem.OrkaSpacing
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.model.BehaviorProfileRepository
 import com.orka.core.model.InteractionEvent
@@ -141,69 +152,99 @@ fun TaskDetailRoute(
 
     OrkaSurface {
         OrkaScreenContainer {
-            OrkaActionButton(
-                text = "Back",
-                emphasis = com.orka.core.model.ActionEmphasis.TERTIARY,
-                onClick = onBack,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+                }
+                OrkaEyebrow("Task")
+            }
 
             state.task?.let { task ->
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(OrkaSpacing.sm),
                 ) {
                     item {
-                        Text(task.title, style = MaterialTheme.typography.headlineLarge)
-                        Text("Type ${task.primitiveType.name}", style = MaterialTheme.typography.bodyLarge)
-                        Text(task.category.name, style = MaterialTheme.typography.bodyLarge)
-                        Text("Due ${TimeFormatter.formatInstant(task.deadline)}", style = MaterialTheme.typography.titleMedium)
-                        if (task.primitiveType == com.orka.core.model.PrimitiveType.EVENT) {
-                            Text(
-                                "Event ${TimeFormatter.formatInstant(task.eventStartTime ?: task.deadline)}",
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text("Profile ${task.preEventProfile?.name ?: "MEETING"}", style = MaterialTheme.typography.titleMedium)
+                        // A LazyColumn item slot stacks multiple emitted composables with zero
+                        // gap by default — without this Column's own spacing, every line here
+                        // (title, type, category, due date, buttons) would run into the next.
+                        Column(verticalArrangement = Arrangement.spacedBy(OrkaSpacing.xs)) {
+                            Text(task.title, style = MaterialTheme.typography.headlineLarge)
+                            Text("Type ${task.primitiveType.displayName()}", style = MaterialTheme.typography.bodyLarge)
+                            Text(task.category.displayName(), style = MaterialTheme.typography.bodyLarge)
+                            Text("Due ${TimeFormatter.formatInstant(task.deadline)}", style = MaterialTheme.typography.titleMedium)
+                            if (task.primitiveType == com.orka.core.model.PrimitiveType.EVENT) {
+                                Text(
+                                    "Event ${TimeFormatter.formatInstant(task.eventStartTime ?: task.deadline)}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    "Profile ${task.preEventProfile?.displayName() ?: "Meeting"}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                            }
+                            Text("Effort ${task.estimatedEffortMinutes} min", style = MaterialTheme.typography.titleMedium)
+                            if (task.status != TaskStatus.COMPLETED && task.status != TaskStatus.DISMISSED) {
+                                OrkaActionButton(
+                                    text = "Mark Done",
+                                    emphasis = com.orka.core.model.ActionEmphasis.PRIMARY,
+                                    onClick = viewModel::markDone,
+                                )
+                                OrkaActionButton(
+                                    text = "Reschedule",
+                                    emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
+                                    onClick = viewModel::reschedule,
+                                )
+                                OrkaActionButton(
+                                    text = "Dismiss task",
+                                    emphasis = com.orka.core.model.ActionEmphasis.TERTIARY,
+                                    onClick = viewModel::dismissTask,
+                                )
+                            }
+                            state.rescheduleMessage?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                         }
-                        Text("Effort ${task.estimatedEffortMinutes} min", style = MaterialTheme.typography.titleMedium)
-                        if (task.status != TaskStatus.COMPLETED && task.status != TaskStatus.DISMISSED) {
-                            OrkaActionButton(
-                                text = "Mark Done",
-                                emphasis = com.orka.core.model.ActionEmphasis.PRIMARY,
-                                onClick = viewModel::markDone,
-                            )
-                            OrkaActionButton(
-                                text = "Reschedule",
-                                emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
-                                onClick = viewModel::reschedule,
-                            )
-                            OrkaActionButton(
-                                text = "Dismiss task",
-                                emphasis = com.orka.core.model.ActionEmphasis.TERTIARY,
-                                onClick = viewModel::dismissTask,
-                            )
-                        }
-                        state.rescheduleMessage?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
+                    }
+                    item {
                         Text("Upcoming reminders", style = MaterialTheme.typography.headlineMedium)
+                    }
+                    if (state.reminders.isEmpty()) {
+                        item {
+                            Text(
+                                "No reminders scheduled.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     items(state.reminders, key = { it.id }) { reminder ->
                         Text(
-                            "${reminder.schedulerMode.name} | ${TimeFormatter.formatInstant(reminder.scheduledTime)}",
+                            "${reminder.schedulerMode.displayName()} | ${TimeFormatter.formatInstant(reminder.scheduledTime)}",
                             style = MaterialTheme.typography.bodyLarge,
                         )
                     }
                     item {
                         Text("Activity", style = MaterialTheme.typography.headlineMedium)
                     }
+                    if (state.interactions.isEmpty()) {
+                        item {
+                            Text(
+                                "No activity yet.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     items(state.interactions, key = { it.id }) { event ->
                         Text(
-                            "${event.type.name} | ${TimeFormatter.formatInstant(event.timestamp)}",
+                            "${event.type.displayName()} | ${TimeFormatter.formatInstant(event.timestamp)}",
                             style = MaterialTheme.typography.bodyLarge,
                         )
                     }

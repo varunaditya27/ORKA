@@ -15,12 +15,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.orka.core.common.TimeFormatter
+import com.orka.core.common.displayName
 import com.orka.core.designsystem.OrkaActionButton
+import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.DiagnosticsRepository
 import com.orka.core.model.DiagnosticsSnapshot
+import com.orka.core.model.RlReadiness
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
@@ -50,6 +53,7 @@ fun DiagnosticsRoute(
         OrkaScreenContainer(
             modifier = Modifier.verticalScroll(rememberScrollState()),
         ) {
+            OrkaEyebrow("Diagnostics")
             Text("Diagnostics", style = MaterialTheme.typography.headlineLarge)
 
             Text("Alarm capability checks", style = MaterialTheme.typography.headlineMedium)
@@ -68,11 +72,14 @@ fun DiagnosticsRoute(
                 "Last fired reminder: ${snapshot.lastFiredReminder?.scheduledTime?.let(TimeFormatter::formatInstant) ?: "None"}",
                 style = MaterialTheme.typography.bodyLarge,
             )
-            Text("Scheduler mode: ${snapshot.activeSchedulerMode}", style = MaterialTheme.typography.bodyLarge)
-            Text("RL readiness: ${snapshot.rlReadiness}", style = MaterialTheme.typography.bodyLarge)
+            Text("Scheduler mode: ${snapshot.activeSchedulerMode.displayName()}", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "RL readiness: ${rlReadinessText(snapshot.rlReadiness)}",
+                style = MaterialTheme.typography.bodyLarge,
+            )
 
             Text("Model", style = MaterialTheme.typography.headlineMedium)
-            Text("Model: ${snapshot.modelInstallState.availability}", style = MaterialTheme.typography.bodyLarge)
+            Text("Model: ${snapshot.modelInstallState.availability.displayName()}", style = MaterialTheme.typography.bodyLarge)
             snapshot.modelInstallState.modelPath?.let {
                 Text("Path: $it", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -87,6 +94,13 @@ fun DiagnosticsRoute(
             OrkaActionButton(text = "Refresh", emphasis = ActionEmphasis.PRIMARY, onClick = viewModel::refresh)
         }
     }
+}
+
+// RlReadiness.NotReady's default toString() would render as "NotReady(reason=...)" — a Kotlin
+// data class dump, not user-facing text. Extract the field directly instead.
+private fun rlReadinessText(readiness: RlReadiness): String = when (readiness) {
+    is RlReadiness.Ready -> "Ready"
+    is RlReadiness.NotReady -> readiness.reason
 }
 
 @Composable

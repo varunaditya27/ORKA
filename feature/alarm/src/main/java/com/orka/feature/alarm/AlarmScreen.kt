@@ -19,8 +19,10 @@ import androidx.lifecycle.viewModelScope
 import com.orka.core.common.TimeFormatter
 import com.orka.core.common.UrgencyTier
 import com.orka.core.common.UrgencyCalculator
+import com.orka.core.common.displayName
 import com.orka.core.designsystem.AlarmBackground
 import com.orka.core.designsystem.OrkaActionButton
+import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.model.AlarmActionOption
 import com.orka.core.model.AlarmActionResolver
 import com.orka.core.model.BehaviorProfileRepository
@@ -315,7 +317,7 @@ fun AlarmRoute(
             androidx.compose.foundation.layout.Column(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text("ORKA", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OrkaEyebrow("ORKA")
                 Text(task?.title ?: "Loading...", style = MaterialTheme.typography.displayLarge)
                 state.reminderLabel?.let {
                     Text(it, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -340,7 +342,7 @@ fun AlarmRoute(
                         dueText,
                         style = MaterialTheme.typography.titleLarge,
                     )
-                    Text(it.category.name, style = MaterialTheme.typography.labelMedium)
+                    Text(it.category.displayName(), style = MaterialTheme.typography.labelMedium)
                 }
             }
 

@@ -35,11 +35,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.orka.core.common.TimeFormatter
+import com.orka.core.common.displayName
 import com.orka.core.designsystem.OrkaActionButton
 import com.orka.core.designsystem.OrkaAmber
 import com.orka.core.designsystem.OrkaEyebrow
+import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSurface
-import com.orka.core.designsystem.OrkaWordmark
 import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.BehaviorProfileRepository
 import com.orka.core.model.ClarificationReason
@@ -80,6 +81,7 @@ private val TIME_TOKEN_REGEX = Regex("""\b(\d{1,2})(?::(\d{2}))?\b""")
 data class CaptureUiState(
     val input: String = "",
     val isAnalyzing: Boolean = false,
+    val isConfirming: Boolean = false,
     val draft: TaskDraft? = null,
     val linkedDrafts: List<TaskDraft> = emptyList(),
     val reminderPreviews: List<List<ReminderEvent>> = emptyList(),
@@ -242,6 +244,10 @@ class CaptureViewModel @Inject constructor(
 
     fun confirmDraft() {
         val currentState = _uiState.value
+        // Without this, a rapid double-tap would re-enter this function while the first
+        // confirmDraft() coroutine is still mid-flight and create a second, duplicate task
+        // (each call builds a fresh Task with a new random id) with its own duplicate reminders.
+        if (currentState.isConfirming) return
         val drafts = currentState.linkedDrafts.ifEmpty { listOfNotNull(currentState.draft) }
         if (drafts.isEmpty()) return
 
@@ -258,6 +264,8 @@ class CaptureViewModel @Inject constructor(
             )
             return
         }
+
+        _uiState.value = _uiState.value.copy(isConfirming = true)
 
         viewModelScope.launch {
             val profile = behaviorProfileRepository.getProfile()
@@ -731,16 +739,11 @@ fun CaptureRoute(
     val selectedPreviewReminders = state.reminderPreviews.getOrNull(selectedDraftIndex).orEmpty()
 
     OrkaSurface {
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(top = 32.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+        OrkaScreenContainer(
+            modifier = modifier.verticalScroll(rememberScrollState()),
         ) {
             OrkaEyebrow("Capture")
-            OrkaWordmark(modifier = Modifier.fillMaxWidth())
+            Text("Capture", style = MaterialTheme.typography.headlineLarge)
             Text(
                 "Describe the task the way you naturally think about it. ORKA will extract the schedule and ask for confirmation before anything is locked in.",
                 style = MaterialTheme.typography.bodyLarge,
@@ -756,6 +759,7 @@ fun CaptureRoute(
             OrkaActionButton(
                 text = if (state.isAnalyzing) "Analysing..." else "Analyse",
                 emphasis = com.orka.core.model.ActionEmphasis.PRIMARY,
+                enabled = !state.isAnalyzing,
                 onClick = viewModel::analyse,
             )
 
@@ -841,12 +845,12 @@ fun CaptureRoute(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                "Type: ${selectedDraft.primitiveType.name}",
+                                "Type: ${selectedDraft.primitiveType.displayName()}",
                                 style = MaterialTheme.typography.bodyLarge,
                             )
                             Text("Title: ${selectedDraft.title}", style = MaterialTheme.typography.bodyLarge)
                             Text(
-                                "Category: ${selectedDraft.category.name}",
+                                "Category: ${selectedDraft.category.displayName()}",
                                 style = MaterialTheme.typography.bodyLarge,
                             )
                             Text(
@@ -859,17 +863,19 @@ fun CaptureRoute(
                             )
                             if (selectedDraft.primitiveType != PrimitiveType.TASK) {
                                 Text(
-                                    "Event profile: ${selectedDraft.preEventProfile?.name ?: "MEETING"}",
+                                    "Event profile: ${selectedDraft.preEventProfile?.displayName() ?: "Meeting"}",
                                     style = MaterialTheme.typography.bodyLarge,
                                 )
+                                // titleMedium (JetBrains Mono) matches how TaskDetailScreen and
+                                // OrkaTaskCard render deadline/time text elsewhere in the app.
                                 Text(
                                     "Event time: ${formatDeadline(selectedDraft.eventStartTime)}",
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    style = MaterialTheme.typography.titleMedium,
                                 )
                             }
                             Text(
                                 text = "Deadline: ${formatDeadline(selectedDraft.deadline)}",
-                                style = MaterialTheme.typography.bodyLarge,
+                                style = MaterialTheme.typography.titleMedium,
                             )
                         }
 
@@ -929,12 +935,14 @@ fun CaptureRoute(
                         }
 
                         OrkaActionButton(
-                            text = "Confirm",
+                            text = if (state.isConfirming) "Saving..." else "Confirm",
                             emphasis = ActionEmphasis.PRIMARY,
+                            enabled = !state.isConfirming,
                             onClick = viewModel::confirmDraft,
                         )
                         OrkaActionButton(
                             text = "Re-enter",
+                            enabled = !state.isConfirming,
                             emphasis = ActionEmphasis.TERTIARY,
                             onClick = viewModel::dismissDraft,
                         )

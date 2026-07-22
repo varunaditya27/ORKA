@@ -5,7 +5,6 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -13,7 +12,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -108,9 +106,7 @@ fun OnboardingRoute(
 
     OrkaSurface {
         OrkaScreenContainer(
-            modifier = modifier
-                .padding(top = 24.dp)
-                .verticalScroll(rememberScrollState()),
+            modifier = modifier.verticalScroll(rememberScrollState()),
         ) {
             OrkaEyebrow("Onboarding")
             OrkaWordmark(modifier = Modifier.fillMaxWidth())
@@ -121,7 +117,10 @@ fun OnboardingRoute(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            Text("1. Notifications", style = MaterialTheme.typography.headlineMedium)
+            // Deliberately unnumbered: the full-screen-alarm section below only appears on
+            // devices that need it (API 34+ without approval already granted), so a fixed
+            // "1/2/3/4" prefix would show a visible gap ("2" then "4") whenever it's hidden.
+            Text("Notifications", style = MaterialTheme.typography.headlineMedium)
             Text(
                 if (capabilities.notificationsGranted) {
                     "Notifications are enabled."
@@ -147,7 +146,7 @@ fun OnboardingRoute(
                 )
             }
 
-            Text("2. Exact alarms", style = MaterialTheme.typography.headlineMedium)
+            Text("Exact alarms", style = MaterialTheme.typography.headlineMedium)
             Text(
                 if (capabilities.exactAlarmsGranted) {
                     "Exact alarm capability looks good."
@@ -161,7 +160,7 @@ fun OnboardingRoute(
             }
 
             if (!capabilities.fullScreenIntentGranted) {
-                Text("3. Full-screen alarm display", style = MaterialTheme.typography.headlineMedium)
+                Text("Full-screen alarm display", style = MaterialTheme.typography.headlineMedium)
                 Text(
                     "Android 14+ requires explicit approval to show ORKA's alarm screen over the lock screen. " +
                         "Without it, reminders arrive as a normal notification instead of the full-screen interrupt.",
@@ -174,7 +173,7 @@ fun OnboardingRoute(
                 )
             }
 
-            Text("4. Battery optimization", style = MaterialTheme.typography.headlineMedium)
+            Text("Battery optimization", style = MaterialTheme.typography.headlineMedium)
             Text(
                 if (capabilities.batteryOptimizationIgnored) {
                     "ORKA is already unrestricted."
@@ -187,7 +186,7 @@ fun OnboardingRoute(
                 OrkaActionButton(text = "Open Battery Settings", emphasis = ActionEmphasis.SECONDARY, onClick = onOpenBatterySettings)
             }
 
-            Text("5. OEM-specific setup", style = MaterialTheme.typography.headlineMedium)
+            Text("OEM-specific setup", style = MaterialTheme.typography.headlineMedium)
             Text(
                 if (capabilities.oemActionNeeded) {
                     "If you use OnePlus (OxygenOS), Xiaomi, Realme, or OPPO, open OEM settings and enable auto-launch/background activity, then set battery usage to Unrestricted for ORKA."
@@ -200,7 +199,7 @@ fun OnboardingRoute(
                 OrkaActionButton(text = "Open OEM Settings", emphasis = ActionEmphasis.SECONDARY, onClick = onOpenOemSettings)
             }
 
-            Text("6. On-device model", style = MaterialTheme.typography.headlineMedium)
+            Text("On-device model", style = MaterialTheme.typography.headlineMedium)
             Text(
                 "Push the Gemma model to this device once with " +
                     "\"adb push gemma-4-E4B-it.litertlm /data/local/tmp/\" — ORKA detects it there directly, " +

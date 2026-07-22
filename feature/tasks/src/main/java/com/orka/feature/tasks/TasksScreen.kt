@@ -12,6 +12,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.designsystem.OrkaTaskCard
@@ -50,6 +51,7 @@ fun TasksRoute(
 
     OrkaSurface {
         OrkaScreenContainer {
+            OrkaEyebrow("Tasks")
             Text("Tasks", style = MaterialTheme.typography.headlineLarge)
             Text(
                 "${state.metrics.completedCount} completed | ${(state.metrics.onTimeRatio * 100).toInt()}% on time",

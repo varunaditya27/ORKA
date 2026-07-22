@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.orka.core.common.TimeFormatter
 import com.orka.core.common.UrgencyTier
 import com.orka.core.common.UrgencyCalculator
+import com.orka.core.common.displayName
 import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.Task
 import com.orka.core.model.TaskStatus
@@ -115,6 +116,7 @@ fun OrkaActionButton(
     text: String,
     emphasis: ActionEmphasis,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     // Uses MaterialTheme.colorScheme tokens (not the raw Orka*/dark-mode color constants) so
@@ -140,6 +142,7 @@ fun OrkaActionButton(
             .fillMaxWidth()
             .heightIn(min = if (emphasis == ActionEmphasis.PRIMARY) 56.dp else 52.dp),
         onClick = onClick,
+        enabled = enabled,
         shape = RoundedCornerShape(10.dp),
         colors = colors,
     ) {
@@ -207,7 +210,7 @@ fun OrkaTaskCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CategoryPill(task.category.name.lowercase().replaceFirstChar(Char::titlecase), accent = categoryColor(task.category))
+                    CategoryPill(task.category.displayName(), accent = categoryColor(task.category))
                     Text(
                         text = when {
                             task.status == TaskStatus.COMPLETED ->

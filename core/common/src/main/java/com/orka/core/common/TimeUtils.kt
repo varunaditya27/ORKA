@@ -63,3 +63,12 @@ class ClockProvider(
 ) {
     fun now(): Instant = clock.instant()
 }
+
+/**
+ * Turns a SCREAMING_SNAKE_CASE enum constant into readable text, e.g. `DERIVED_TASK_EVENT` ->
+ * "Derived Task Event". Several screens were showing raw enum names (`primitiveType.name`,
+ * `category.name`) directly in user-facing text — jarring and inconsistent with the one place
+ * that already formatted them nicely (the category pill on task cards).
+ */
+fun Enum<*>.displayName(): String =
+    name.lowercase(Locale.ROOT).split('_').joinToString(" ") { it.replaceFirstChar(Char::titlecase) }

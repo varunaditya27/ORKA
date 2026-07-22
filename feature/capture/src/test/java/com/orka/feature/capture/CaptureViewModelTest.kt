@@ -18,6 +18,7 @@ import com.orka.data.scheduler.PreEventSchedulerPolicy
 import com.orka.data.scheduler.RuleBasedSchedulerPolicy
 import com.orka.data.scheduler.SchedulerOrchestrator
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -90,6 +91,39 @@ class CaptureViewModelTest {
         advanceUntilIdle()
 
         assertThat(viewModel.uiState.value.smartClarificationInstant).isNull()
+    }
+
+    @Test
+    fun confirmDraftIgnoresReentrantCallWhileFirstConfirmIsStillInFlight() = runTest(mainDispatcherRule.dispatcher) {
+        val resolvedDraft = TestFixtures.taskDraft(clarificationNeeded = false, clarificationReason = null)
+        val taskRepository = com.orka.core.testing.FakeTaskRepository()
+        val viewModel = CaptureViewModel(
+            parser = FakeTaskParser(TestFixtures.taskParseResult(draft = resolvedDraft)),
+            validator = FakeTaskDraftValidator(),
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+            taskClarificationAdvisor = FakeTaskClarificationAdvisor(),
+        )
+
+        viewModel.updateInput(resolvedDraft.rawInput)
+        viewModel.analyse()
+        advanceUntilIdle()
+
+        // Simulates a rapid double-tap: both calls happen before either coroutine has run.
+        viewModel.confirmDraft()
+        viewModel.confirmDraft()
+        advanceUntilIdle()
+
+        assertThat(taskRepository.observeActiveTasks().first()).hasSize(1)
     }
 
     @Test
