@@ -57,6 +57,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
@@ -203,6 +206,90 @@ private object GemmaEngineHolder {
 
 private fun Message.asText(): String =
     contents.contents.filterIsInstance<Content.Text>().joinToString(separator = "") { it.text }
+
+// Every Gemma call site used to cram its entire prompt — static rules/schema/examples AND the
+// per-call task-specific details — into a single plain message via conversation.sendMessage().
+// The SDK has a dedicated system-instruction channel (ConversationConfig.systemInstruction) meant
+// specifically for the static, unchanging half of a prompt; models are commonly tuned to give it
+// different (usually stronger) compliance weight than a same-turn user message, and mixing
+// instructional/schema text into "user" content risks the model treating it as conversation
+// content rather than an instruction. Every call site below now builds its conversation with only
+// the static instructions as the system instruction, sending just the per-call dynamic details as
+// the user message.
+private fun Engine.createConversationWithSystemInstruction(systemInstruction: String): Conversation =
+    createConversation(ConversationConfig(systemInstruction = Contents.of(systemInstruction)))
+
+// Static half of parse()'s prompt — classification rules, temporal resolution rules,
+// time-of-day/AM-PM defaults, the output schema, and worked examples. None of this changes
+// between calls, so it's the system instruction; only the current date/time context and the
+// user's actual input are per-call (see gemmaParse()'s userMessage).
+private val PARSE_SYSTEM_INSTRUCTION = """
+    You are a structured task extraction engine. Your sole job is to parse natural language input and return a valid JSON object conforming to the TaskObject schema. You output only JSON, with no preamble, no explanation, and no markdown.
+
+    INPUT CLASSIFICATION RULES:
+    - EVENT: An event is something that happens at a specific time. Has a start time, not a deadline. Examples: "Meeting at 9pm", "Doctor's appointment on Thursday at 11am", "Flight on 15th March at 6:45am".
+    - TASK: A task is something the user must complete by a future point. Has a deadline. Examples: "Submit assignment by Friday 11:59pm", "Finish client report before Monday".
+    - DERIVED_TASK_EVENT: Preparation/practice for an upcoming moment. Decompose into two linked entities: one EVENT (the presentation/exam/call itself) and one TASK (the preparation work, with the event time as its deadline). Examples: "Prepare slides for the Monday presentation".
+
+    TEMPORAL RESOLUTION RULES:
+    1. Time with no date:
+       - If specified time is > 30 minutes in future -> resolve to today.
+       - If specified time is <= 30 minutes in future -> resolve to today, flag deadline_confidence: 0.6.
+       - If specified time has already passed today -> resolve to tomorrow.
+    2. "Tomorrow": calendar day following current IST date.
+    3. "Tonight"/"This evening": today. "Tonight" defaults to 21:00 IST. "This evening" defaults to 18:00 IST.
+    4. "This morning"/"This afternoon": "This morning" defaults to 09:00 IST. "This afternoon" defaults to 14:00 IST. If already passed, set clarification_needed: true and clarification_reason: "morning_passed".
+    5. Named day:
+       - "This [day]": upcoming occurrence in current week (Mon-Sun). If day passed, set clarification_needed: true.
+       - "Next [day]": occurrence in following week.
+    6. "This week": Sunday 23:59 IST.
+    7. "End of day"/"EOD": today 23:59 IST.
+    8. Explicit date: if no year, assume current year if future, next year if past.
+    9. "Soon"/"Later"/Vague: set clarification_needed: true, clarification_reason: "vague_temporal_expression".
+    10. No temporal expression: set clarification_needed: true, clarification_reason: "no_deadline_detected".
+
+    TIME-OF-DAY DEFAULTS:
+    - Morning: 09:00 IST
+    - Mid-morning: 10:30 IST
+    - Afternoon: 14:00 IST
+    - Evening: 18:00 IST
+    - Tonight/Night: 21:00 IST
+    - Late night: 23:00 IST
+    - Dawn/Early morning: 06:00 IST
+
+    AM/PM INFERENCE:
+    - 1 to 6 with no AM/PM -> PM.
+    - 7 to 11 with no AM/PM -> AM if morning keyword, otherwise PM if current time is morning, AM if current time is evening.
+    - 12 with no AM/PM -> noon (12pm) unless midnight/raat is present.
+
+    OUTPUT SCHEMA:
+    If type is DERIVED_TASK_EVENT, return a JSON array containing two objects (the TASK first, then the EVENT). For all other types, return a single JSON object.
+    Fields:
+    - "primitive_type": "EVENT", "TASK", or "DERIVED_TASK_EVENT"
+    - "title": string (short title)
+    - "description": string (original input)
+    - "deadline_timestamp": ISO 8601 string with IST offset (e.g. "2025-04-02T21:00:00+05:30") or null (for TASK entities, this is the deadline; for EVENT, same as event_start_time)
+    - "deadline_confidence": float between 0.0 and 1.0
+    - "event_start_time": ISO 8601 string with IST offset or null
+    - "event_duration_minutes": integer or null (e.g., meeting=60, appointment=30, exam=180, call=15)
+    - "pre_event_profile": "MEETING", "EXAM", "APPOINTMENT", "TRAVEL", "CALL", "DEADLINE_EVENT" or null
+    - "clarification_needed": boolean
+    - "clarification_reason": "no_deadline_detected", "vague_temporal_expression", "ambiguous_day_reference", "morning_passed", "ambiguous_am_pm", "date_in_past" or null
+    - "resolved_timezone": "Asia/Kolkata"
+    - "temporal_expression_raw": string or null
+    - "category": "ACADEMIC", "PERSONAL", "PROFESSIONAL", "CLUB", "HEALTH", "FINANCIAL", "OTHER"
+    - "estimated_effort_minutes": integer
+
+    WORKED EXAMPLES:
+    Example 1: "Submit the ML assignment by Friday 11:59pm" (context: Wednesday 02 Apr 2025, 14:35 IST)
+    Output: {"primitive_type":"TASK","title":"Submit the ML assignment","description":"Submit the ML assignment by Friday 11:59pm","deadline_timestamp":"2025-04-04T23:59:00+05:30","deadline_confidence":0.95,"event_start_time":null,"event_duration_minutes":null,"pre_event_profile":null,"clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"Friday 11:59pm","category":"ACADEMIC","estimated_effort_minutes":120}
+
+    Example 2: "Meeting at 9pm" (context: Wednesday 02 Apr 2025, 14:35 IST)
+    Output: {"primitive_type":"EVENT","title":"Meeting","description":"Meeting at 9pm","deadline_timestamp":"2025-04-02T21:00:00+05:30","deadline_confidence":0.95,"event_start_time":"2025-04-02T21:00:00+05:30","event_duration_minutes":60,"pre_event_profile":"MEETING","clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"9pm","category":"OTHER","estimated_effort_minutes":45}
+
+    Example 3: "Prepare slides for Monday presentation" (context: Wednesday 02 Apr 2025, 14:35 IST)
+    Output: [{"primitive_type":"TASK","title":"Prepare slides","description":"Prepare slides for Monday presentation","deadline_timestamp":"2025-04-07T09:00:00+05:30","deadline_confidence":0.65,"event_start_time":null,"event_duration_minutes":null,"pre_event_profile":null,"clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"Monday","category":"PROFESSIONAL","estimated_effort_minutes":120},{"primitive_type":"EVENT","title":"Presentation","description":"Prepare slides for Monday presentation","deadline_timestamp":"2025-04-07T09:00:00+05:30","deadline_confidence":0.65,"event_start_time":"2025-04-07T09:00:00+05:30","event_duration_minutes":60,"pre_event_profile":"MEETING","clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"Monday","category":"PROFESSIONAL","estimated_effort_minutes":120}]
+""".trimIndent()
 
 private fun cleanJson(input: String): String {
     var cleaned = input.trim()
@@ -373,94 +460,24 @@ class DefaultTaskParser @Inject constructor(
         modelFile: File,
     ): List<TaskDraft>? {
         val nowIst = context.now.withZoneSameInstant(IST_ZONE_ID)
-        val contextBlock = """
+        val userMessage = """
             CURRENT CONTEXT:
             Date: ${nowIst.dayOfWeek.name.lowercase().replaceFirstChar { it.titlecase() }}, ${"%02d".format(nowIst.dayOfMonth)} ${nowIst.month.name.lowercase().replaceFirstChar { it.titlecase() }} ${nowIst.year}
             Time: ${"%02d:%02d".format(nowIst.hour, nowIst.minute)} IST
             Timezone: Asia/Kolkata (IST, UTC+5:30)
-        """.trimIndent()
 
-        val systemPrompt = """
-            You are a structured task extraction engine. Your sole job is to parse natural language input and return a valid JSON object conforming to the TaskObject schema. You output only JSON, with no preamble, no explanation, and no markdown.
-            
-            $contextBlock
-            
-            INPUT CLASSIFICATION RULES:
-            - EVENT: An event is something that happens at a specific time. Has a start time, not a deadline. Examples: "Meeting at 9pm", "Doctor's appointment on Thursday at 11am", "Flight on 15th March at 6:45am".
-            - TASK: A task is something the user must complete by a future point. Has a deadline. Examples: "Submit assignment by Friday 11:59pm", "Finish client report before Monday".
-            - DERIVED_TASK_EVENT: Preparation/practice for an upcoming moment. Decompose into two linked entities: one EVENT (the presentation/exam/call itself) and one TASK (the preparation work, with the event time as its deadline). Examples: "Prepare slides for the Monday presentation".
-            
-            TEMPORAL RESOLUTION RULES:
-            1. Time with no date:
-               - If specified time is > 30 minutes in future -> resolve to today.
-               - If specified time is <= 30 minutes in future -> resolve to today, flag deadline_confidence: 0.6.
-               - If specified time has already passed today -> resolve to tomorrow.
-            2. "Tomorrow": calendar day following current IST date.
-            3. "Tonight"/"This evening": today. "Tonight" defaults to 21:00 IST. "This evening" defaults to 18:00 IST.
-            4. "This morning"/"This afternoon": "This morning" defaults to 09:00 IST. "This afternoon" defaults to 14:00 IST. If already passed, set clarification_needed: true and clarification_reason: "morning_passed".
-            5. Named day:
-               - "This [day]": upcoming occurrence in current week (Mon-Sun). If day passed, set clarification_needed: true.
-               - "Next [day]": occurrence in following week.
-            6. "This week": Sunday 23:59 IST.
-            7. "End of day"/"EOD": today 23:59 IST.
-            8. Explicit date: if no year, assume current year if future, next year if past.
-            9. "Soon"/"Later"/Vague: set clarification_needed: true, clarification_reason: "vague_temporal_expression".
-            10. No temporal expression: set clarification_needed: true, clarification_reason: "no_deadline_detected".
-            
-            TIME-OF-DAY DEFAULTS:
-            - Morning: 09:00 IST
-            - Mid-morning: 10:30 IST
-            - Afternoon: 14:00 IST
-            - Evening: 18:00 IST
-            - Tonight/Night: 21:00 IST
-            - Late night: 23:00 IST
-            - Dawn/Early morning: 06:00 IST
-            
-            AM/PM INFERENCE:
-            - 1 to 6 with no AM/PM -> PM.
-            - 7 to 11 with no AM/PM -> AM if morning keyword, otherwise PM if current time is morning, AM if current time is evening.
-            - 12 with no AM/PM -> noon (12pm) unless midnight/raat is present.
-            
-            OUTPUT SCHEMA:
-            If type is DERIVED_TASK_EVENT, return a JSON array containing two objects (the TASK first, then the EVENT). For all other types, return a single JSON object.
-            Fields:
-            - "primitive_type": "EVENT", "TASK", or "DERIVED_TASK_EVENT"
-            - "title": string (short title)
-            - "description": string (original input)
-            - "deadline_timestamp": ISO 8601 string with IST offset (e.g. "2025-04-02T21:00:00+05:30") or null (for TASK entities, this is the deadline; for EVENT, same as event_start_time)
-            - "deadline_confidence": float between 0.0 and 1.0
-            - "event_start_time": ISO 8601 string with IST offset or null
-            - "event_duration_minutes": integer or null (e.g., meeting=60, appointment=30, exam=180, call=15)
-            - "pre_event_profile": "MEETING", "EXAM", "APPOINTMENT", "TRAVEL", "CALL", "DEADLINE_EVENT" or null
-            - "clarification_needed": boolean
-            - "clarification_reason": "no_deadline_detected", "vague_temporal_expression", "ambiguous_day_reference", "morning_passed", "ambiguous_am_pm", "date_in_past" or null
-            - "resolved_timezone": "Asia/Kolkata"
-            - "temporal_expression_raw": string or null
-            - "category": "ACADEMIC", "PERSONAL", "PROFESSIONAL", "CLUB", "HEALTH", "FINANCIAL", "OTHER"
-            - "estimated_effort_minutes": integer
-            
-            WORKED EXAMPLES:
-            Example 1: "Submit the ML assignment by Friday 11:59pm" (context: Wednesday 02 Apr 2025, 14:35 IST)
-            Output: {"primitive_type":"TASK","title":"Submit the ML assignment","description":"Submit the ML assignment by Friday 11:59pm","deadline_timestamp":"2025-04-04T23:59:00+05:30","deadline_confidence":0.95,"event_start_time":null,"event_duration_minutes":null,"pre_event_profile":null,"clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"Friday 11:59pm","category":"ACADEMIC","estimated_effort_minutes":120}
-            
-            Example 2: "Meeting at 9pm" (context: Wednesday 02 Apr 2025, 14:35 IST)
-            Output: {"primitive_type":"EVENT","title":"Meeting","description":"Meeting at 9pm","deadline_timestamp":"2025-04-02T21:00:00+05:30","deadline_confidence":0.95,"event_start_time":"2025-04-02T21:00:00+05:30","event_duration_minutes":60,"pre_event_profile":"MEETING","clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"9pm","category":"OTHER","estimated_effort_minutes":45}
-            
-            Example 3: "Prepare slides for Monday presentation" (context: Wednesday 02 Apr 2025, 14:35 IST)
-            Output: [{"primitive_type":"TASK","title":"Prepare slides","description":"Prepare slides for Monday presentation","deadline_timestamp":"2025-04-07T09:00:00+05:30","deadline_confidence":0.65,"event_start_time":null,"event_duration_minutes":null,"pre_event_profile":null,"clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"Monday","category":"PROFESSIONAL","estimated_effort_minutes":120},{"primitive_type":"EVENT","title":"Presentation","description":"Prepare slides for Monday presentation","deadline_timestamp":"2025-04-07T09:00:00+05:30","deadline_confidence":0.65,"event_start_time":"2025-04-07T09:00:00+05:30","event_duration_minutes":60,"pre_event_profile":"MEETING","clarification_needed":false,"clarification_reason":null,"resolved_timezone":"Asia/Kolkata","temporal_expression_raw":"Monday","category":"PROFESSIONAL","estimated_effort_minutes":120}]
-            
             USER INPUT:
             "$rawInput"
-            
+
             Output JSON:
         """.trimIndent()
 
         return try {
             val response = GemmaEngineHolder.use(modelFile.absolutePath, this@DefaultTaskParser.context) { engine ->
-                engine.createConversation().use { conversation ->
+                engine.createConversationWithSystemInstruction(PARSE_SYSTEM_INSTRUCTION).use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
-                            conversation.sendMessage(systemPrompt)
+                            conversation.sendMessage(userMessage)
                         }
                     }
                 }
@@ -1035,6 +1052,22 @@ private data class LlmTaskSplit(
     val second_effort_minutes: Int,
 )
 
+private val SPLIT_SYSTEM_INSTRUCTION = """
+    You are a task-planning assistant. Split ONE task into exactly two smaller, concrete
+    sub-tasks that together accomplish the original task. Respond with ONLY a JSON object,
+    no explanation, no markdown.
+
+    Fields:
+    - "first_title": short, concrete, actionable title for the first half of the work
+    - "first_effort_minutes": integer, this half's share of the total effort
+    - "second_title": short, concrete, actionable title for the second half of the work
+    - "second_effort_minutes": integer, this half's share of the total effort
+    first_effort_minutes + second_effort_minutes should add up to approximately the task's total estimated effort.
+
+    Example: TASK "Prepare quarterly report" (180 minutes, PROFESSIONAL)
+    Output: {"first_title":"Gather data and outline report","first_effort_minutes":90,"second_title":"Write and format final report","second_effort_minutes":90}
+""".trimIndent()
+
 /**
  * Elevates [SPLIT_TASK][com.orka.core.model.InteractionType.SPLIT_TASK] beyond a mechanical
  * "divide the effort in half" by asking Gemma for a breakdown that's actually specific to the
@@ -1050,35 +1083,21 @@ class DefaultTaskSplitter @Inject constructor(
     override suspend fun suggestSplit(task: Task): TaskSplitSuggestion? {
         val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable()) ?: return null
 
-        val prompt = """
-            You are a task-planning assistant. Split ONE task into exactly two smaller, concrete
-            sub-tasks that together accomplish the original task. Respond with ONLY a JSON object,
-            no explanation, no markdown.
-
+        val userMessage = """
             TASK: "${task.title}"
             DETAILS: "${task.description ?: task.title}"
             CATEGORY: ${task.category.name}
             TOTAL ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
-
-            Fields:
-            - "first_title": short, concrete, actionable title for the first half of the work
-            - "first_effort_minutes": integer, this half's share of the total effort
-            - "second_title": short, concrete, actionable title for the second half of the work
-            - "second_effort_minutes": integer, this half's share of the total effort
-            first_effort_minutes + second_effort_minutes should add up to approximately ${task.estimatedEffortMinutes}.
-
-            Example: TASK "Prepare quarterly report" (180 minutes, PROFESSIONAL)
-            Output: {"first_title":"Gather data and outline report","first_effort_minutes":90,"second_title":"Write and format final report","second_effort_minutes":90}
 
             Output JSON:
         """.trimIndent()
 
         return try {
             val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
-                engine.createConversation().use { conversation ->
+                engine.createConversationWithSystemInstruction(SPLIT_SYSTEM_INSTRUCTION).use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
-                            conversation.sendMessage(prompt)
+                            conversation.sendMessage(userMessage)
                         }
                     }
                 }
@@ -1119,6 +1138,24 @@ private data class LlmReschedule(
     val reason: String,
 )
 
+private val RESCHEDULE_SYSTEM_INSTRUCTION = """
+    You are a scheduling assistant. A task needs to be rescheduled to a realistic future
+    time. Respond with ONLY a JSON object, no explanation, no markdown.
+
+    Suggest ONE new deadline that is after the current time, ideally falls within the
+    user's productive hours, and leaves enough buffer for the estimated effort. Do not
+    suggest a time more than 14 days after the original deadline.
+
+    Fields:
+    - "new_deadline": ISO 8601 string with IST offset (e.g. "2025-04-05T14:00:00+05:30")
+    - "reason": short (under 12 words) human-readable reason for this choice
+
+    Example: TASK "Submit expense report" (ACADEMIC, 30 minutes), original deadline
+    2025-04-02T23:59:00+05:30, current time 2025-04-03T08:10:00+05:30, productive hours
+    9:00 to 21:00.
+    Output: {"new_deadline":"2025-04-03T10:00:00+05:30","reason":"Tomorrow morning, well within your productive hours"}
+""".trimIndent()
+
 /**
  * Elevates the "Reschedule" action beyond a flat "+1 day": asks Gemma for a new deadline that
  * accounts for the user's actual productive hours and the task's category/effort, rather than
@@ -1135,10 +1172,7 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
 
         val nowIst = ZonedDateTime.now(IST_ZONE_ID)
         val originalDeadlineIst = task.deadline.atZone(IST_ZONE_ID)
-        val prompt = """
-            You are a scheduling assistant. A task needs to be rescheduled to a realistic future
-            time. Respond with ONLY a JSON object, no explanation, no markdown.
-
+        val userMessage = """
             TASK: "${task.title}"
             CATEGORY: ${task.category.name}
             ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
@@ -1146,28 +1180,15 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
             CURRENT TIME: ${nowIst.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}
             USER'S USUAL PRODUCTIVE HOURS: ${profile.productiveStartHour}:00 to ${profile.productiveEndHour}:00 IST
 
-            Suggest ONE new deadline that is after the current time, ideally falls within the
-            user's productive hours, and leaves enough buffer for the estimated effort. Do not
-            suggest a time more than 14 days after the original deadline.
-
-            Fields:
-            - "new_deadline": ISO 8601 string with IST offset (e.g. "2025-04-05T14:00:00+05:30")
-            - "reason": short (under 12 words) human-readable reason for this choice
-
-            Example: TASK "Submit expense report" (ACADEMIC, 30 minutes), original deadline
-            2025-04-02T23:59:00+05:30, current time 2025-04-03T08:10:00+05:30, productive hours
-            9:00 to 21:00.
-            Output: {"new_deadline":"2025-04-03T10:00:00+05:30","reason":"Tomorrow morning, well within your productive hours"}
-
             Output JSON:
         """.trimIndent()
 
         return try {
             val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
-                engine.createConversation().use { conversation ->
+                engine.createConversationWithSystemInstruction(RESCHEDULE_SYSTEM_INSTRUCTION).use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
-                            conversation.sendMessage(prompt)
+                            conversation.sendMessage(userMessage)
                         }
                     }
                 }
@@ -1227,30 +1248,35 @@ class DefaultTaskSnoozeAdvisor @Inject constructor(
             SHORT_SNOOZE_MIN_MINUTES to SHORT_SNOOZE_MAX_MINUTES
         }
 
-        val prompt = """
+        // Built per-call rather than hoisted to a top-level constant since the two snooze tiers
+        // have different min/max bounds baked into the instructional text itself — still kept
+        // entirely out of the user message, same as every other advisor here.
+        val systemInstruction = """
             You are helping decide how long to snooze a task reminder. Respond with ONLY a JSON
             object, no explanation, no markdown.
-
-            TASK: "${task.title}"
-            CATEGORY: ${task.category.name}
-            ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
-            SNOOZE TIER: ${if (isLongSnooze) "long — this task still has plenty of time left" else "short — this task is urgent"}
 
             Suggest how many minutes to wait before reminding again. The value MUST be between
             $minMinutes and $maxMinutes minutes.
 
             Fields:
             - "snooze_minutes": integer between $minMinutes and $maxMinutes
+        """.trimIndent()
+
+        val userMessage = """
+            TASK: "${task.title}"
+            CATEGORY: ${task.category.name}
+            ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
+            SNOOZE TIER: ${if (isLongSnooze) "long — this task still has plenty of time left" else "short — this task is urgent"}
 
             Output JSON:
         """.trimIndent()
 
         return try {
             val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
-                engine.createConversation().use { conversation ->
+                engine.createConversationWithSystemInstruction(systemInstruction).use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
-                            conversation.sendMessage(prompt)
+                            conversation.sendMessage(userMessage)
                         }
                     }
                 }
@@ -1267,6 +1293,17 @@ class DefaultTaskSnoozeAdvisor @Inject constructor(
 @Serializable
 private data class LlmClarificationDeadline(val deadline: String)
 
+private val CLARIFICATION_SYSTEM_INSTRUCTION = """
+    You are a scheduling assistant. The task below has no clear deadline. Suggest ONE
+    concrete, reasonable deadline for it. Respond with ONLY a JSON object, no
+    explanation, no markdown.
+
+    The deadline must be in the future and within the next 30 days.
+
+    Fields:
+    - "deadline": ISO 8601 string with IST offset (e.g. "2025-04-05T18:00:00+05:30")
+""".trimIndent()
+
 /**
  * Elevates the Capture flow's clarification quick-picks beyond generic "Today 6pm"/"Tomorrow
  * 9am" defaults when the input was too vague to resolve a deadline at all: asks Gemma for one
@@ -1282,31 +1319,22 @@ class DefaultTaskClarificationAdvisor @Inject constructor(
         val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable()) ?: return null
 
         val nowIst = ZonedDateTime.now(IST_ZONE_ID)
-        val prompt = """
-            You are a scheduling assistant. The task below has no clear deadline. Suggest ONE
-            concrete, reasonable deadline for it. Respond with ONLY a JSON object, no
-            explanation, no markdown.
-
+        val userMessage = """
             TASK: "${draft.title.ifBlank { draft.rawInput }}"
             RAW INPUT: "${draft.rawInput}"
             CATEGORY: ${draft.category.name}
             ESTIMATED EFFORT: ${draft.estimatedEffortMinutes} minutes
             CURRENT TIME: ${nowIst.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}
 
-            The deadline must be in the future and within the next 30 days.
-
-            Fields:
-            - "deadline": ISO 8601 string with IST offset (e.g. "2025-04-05T18:00:00+05:30")
-
             Output JSON:
         """.trimIndent()
 
         return try {
             val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
-                engine.createConversation().use { conversation ->
+                engine.createConversationWithSystemInstruction(CLARIFICATION_SYSTEM_INSTRUCTION).use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
-                            conversation.sendMessage(prompt)
+                            conversation.sendMessage(userMessage)
                         }
                     }
                 }
