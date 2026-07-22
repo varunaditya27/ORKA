@@ -42,8 +42,8 @@ import com.orka.core.common.TimeFormatter
 import com.orka.core.common.displayName
 import com.orka.core.designsystem.OrkaActionButton
 import com.orka.core.designsystem.OrkaAmber
-import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
+import com.orka.core.designsystem.OrkaScreenHeader
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.BehaviorProfileRepository
@@ -760,8 +760,7 @@ fun CaptureRoute(
         OrkaScreenContainer(
             modifier = modifier.verticalScroll(rememberScrollState()),
         ) {
-            OrkaEyebrow("Capture")
-            Text("Capture", style = MaterialTheme.typography.headlineLarge)
+            OrkaScreenHeader("Capture")
             Text(
                 "Describe the task the way you naturally think about it. ORKA will extract the schedule and ask for confirmation before anything is locked in.",
                 style = MaterialTheme.typography.bodyLarge,

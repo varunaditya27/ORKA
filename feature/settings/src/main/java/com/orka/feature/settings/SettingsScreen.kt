@@ -17,8 +17,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.orka.core.designsystem.OrkaActionButton
-import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
+import com.orka.core.designsystem.OrkaScreenHeader
 import com.orka.core.designsystem.OrkaSpacing
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.model.ModelAvailability
@@ -99,8 +99,7 @@ fun SettingsRoute(
         OrkaScreenContainer(
             modifier = Modifier.verticalScroll(rememberScrollState()),
         ) {
-            OrkaEyebrow("Settings")
-            Text("Settings", style = MaterialTheme.typography.headlineLarge)
+            OrkaScreenHeader("Settings")
             SettingToggle("Adaptive scheduling", state.settings.adaptiveSchedulingEnabled, viewModel::toggleAdaptive)
             SettingToggle("RL scheduling", state.settings.rlSchedulingEnabled, viewModel::toggleRl)
             Text("Theme", style = MaterialTheme.typography.headlineMedium)
@@ -124,7 +123,9 @@ fun SettingsRoute(
 
             Text("On-device model", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Push the model once via \"adb push gemma-4-E4B-it.litertlm /data/local/tmp/\" — ORKA detects it there directly, no need to resend it after app updates.",
+                "Push the model once via \"adb push gemma-4-E4B-it.litertlm /data/local/tmp/\" — ORKA detects it there directly, no need to resend it after app updates. " +
+                    "To switch between multiple pushed models (e.g. to compare size/latency), push each one, then set which to use with: " +
+                    "adb shell \"echo <filename>.litertlm > /data/local/tmp/orka_model_config.txt\".",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

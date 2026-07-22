@@ -17,8 +17,8 @@ import androidx.lifecycle.viewModelScope
 import com.orka.core.common.TimeFormatter
 import com.orka.core.common.displayName
 import com.orka.core.designsystem.OrkaActionButton
-import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
+import com.orka.core.designsystem.OrkaScreenHeader
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.DiagnosticsRepository
@@ -53,8 +53,7 @@ fun DiagnosticsRoute(
         OrkaScreenContainer(
             modifier = Modifier.verticalScroll(rememberScrollState()),
         ) {
-            OrkaEyebrow("Diagnostics")
-            Text("Diagnostics", style = MaterialTheme.typography.headlineLarge)
+            OrkaScreenHeader("Diagnostics")
 
             Text("Alarm capability checks", style = MaterialTheme.typography.headlineMedium)
             CapabilityRow("Exact alarms", isOk = capabilities.exactAlarmsGranted)

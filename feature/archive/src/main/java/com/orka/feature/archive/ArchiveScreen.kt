@@ -12,8 +12,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import com.orka.core.designsystem.OrkaEyebrow
 import com.orka.core.designsystem.OrkaScreenContainer
+import com.orka.core.designsystem.OrkaScreenHeader
 import com.orka.core.designsystem.OrkaSurface
 import com.orka.core.designsystem.OrkaTaskCard
 import com.orka.core.model.Task
@@ -50,8 +50,7 @@ fun ArchiveRoute(
 
     OrkaSurface {
         OrkaScreenContainer {
-            OrkaEyebrow("Archive")
-            Text("Archive", style = MaterialTheme.typography.headlineLarge)
+            OrkaScreenHeader("Archive")
             Text(
                 "${state.metrics.completedCount} tasks completed | ${(state.metrics.onTimeRatio * 100).toInt()}% on time",
                 style = MaterialTheme.typography.bodyLarge,
