@@ -166,6 +166,7 @@ class AlarmManagerRegistrar @Inject constructor(
         val entities = registryDao.getAll()
         val remindersToRegister = mutableListOf<ReminderEvent>()
         val staleReminderIds = mutableListOf<String>()
+        val registeredReminderIds = mutableSetOf<String>()
 
         entities.forEach { entity ->
             val reminder = taskRepository.getReminder(entity.reminderId)
@@ -174,10 +175,23 @@ class AlarmManagerRegistrar @Inject constructor(
                 reminder.scheduledTime.isAfter(now)
             ) {
                 remindersToRegister += reminder
+                registeredReminderIds += reminder.id
             } else {
                 staleReminderIds += entity.reminderId
             }
         }
+
+        // `alarm_registry` isn't the source of truth for what's SCHEDULED — persistSchedule()
+        // writes the `reminders` row before calling register() (which is what actually inserts
+        // the registry row), so a process death or exception in between leaves a reminder that's
+        // SCHEDULED in the DB with no registry row at all. Since the loop above only walks the
+        // registry, such a reminder would otherwise never be picked up again by any refresh —
+        // permanently "scheduled" in the UI but never actually armed with AlarmManager. Reconcile
+        // directly against the reminders table too, not just the registry.
+        val orphanedScheduled = taskRepository.getAllScheduledReminders().filter {
+            it.id !in registeredReminderIds && it.scheduledTime.isAfter(now)
+        }
+        remindersToRegister += orphanedScheduled
 
         staleReminderIds.forEach { registryDao.deleteByReminder(it) }
         if (remindersToRegister.isNotEmpty()) {
@@ -233,7 +247,12 @@ class OrkaAlarmReceiver : BroadcastReceiver() {
         val openAppIntent = PendingIntent.getActivity(
             context,
             reminderId.hashCode() + 1,
-            Intent(ORKA_OPEN_APP_ACTION).setPackage(context.packageName),
+            // Carries reminder_id so MainActivity can navigate straight to this task's detail
+            // screen — without it, tapping the notification body (the fallback path when the
+            // full-screen intent above gets refused by background-activity-start restrictions)
+            // just opened the app to whatever its default tab was, with no link back to the task
+            // the notification was actually about.
+            Intent(ORKA_OPEN_APP_ACTION).setPackage(context.packageName).putExtra("reminder_id", reminderId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 

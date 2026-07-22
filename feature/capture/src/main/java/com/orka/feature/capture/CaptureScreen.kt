@@ -72,6 +72,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+private const val MAX_INPUT_LENGTH = 500
 private val IST_ZONE: ZoneId = ZoneId.of("Asia/Kolkata")
 private val PREVIEW_TIME_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("EEE, d MMM · h:mm a", Locale.ENGLISH)
@@ -108,7 +109,12 @@ class CaptureViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(CaptureUiState(input = savedStateHandle[KEY_INPUT] ?: ""))
     val uiState = _uiState.asStateFlow()
 
-    fun updateInput(input: String) {
+    fun updateInput(rawInput: String) {
+        // Bounds what actually reaches the Gemma prompt — a pasted email/document rather than a
+        // typed task description would otherwise go in unbounded, degrading a small on-device
+        // model's output quality and pushing inference closer to GEMMA_INFERENCE_TIMEOUT_MS.
+        // 500 chars is generous for a task description while still rejecting accidental pastes.
+        val input = rawInput.take(MAX_INPUT_LENGTH)
         savedStateHandle[KEY_INPUT] = input
         _uiState.value = _uiState.value.copy(
             input = input,
@@ -763,6 +769,7 @@ fun CaptureRoute(
                 onValueChange = viewModel::updateInput,
                 label = { Text("What needs to be done?") },
                 minLines = 3,
+                supportingText = { Text("${state.input.length}/$MAX_INPUT_LENGTH") },
             )
             OrkaActionButton(
                 text = if (state.isAnalyzing) "Analysing..." else "Analyse",

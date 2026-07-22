@@ -141,4 +141,14 @@ class CaptureViewModelTest {
 
         assertThat(viewModel.uiState.value.smartClarificationInstant).isNull()
     }
+
+    @Test
+    fun updateInputTruncatesPastedTextToKeepThePromptBounded() = runTest(mainDispatcherRule.dispatcher) {
+        val viewModel = viewModel(parseResult = TestFixtures.taskParseResult())
+        val pasted = "x".repeat(10_000)
+
+        viewModel.updateInput(pasted)
+
+        assertThat(viewModel.uiState.value.input.length).isEqualTo(500)
+    }
 }

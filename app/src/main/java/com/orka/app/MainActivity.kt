@@ -13,6 +13,7 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -27,6 +28,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +43,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -78,13 +81,40 @@ import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    // hiltViewModel() inside OrkaApp() resolves to this same instance (same ViewModelStoreOwner,
+    // the Activity) — obtained here too just to gate the splash screen.
+    private val rootViewModel: RootViewModel by viewModels()
+
+    // The full-screen alarm intent is the primary way a fired reminder is shown, but it can be
+    // refused by background-activity-start restrictions (see OrkaAlarmReceiver) — the tappable
+    // notification body is the fallback path, and launches MainActivity via this action with the
+    // reminder id attached. Without tracking it, tapping that notification just opened the app to
+    // whatever its normal start tab is, with no way to tell which task the notification was about.
+    private val pendingReminderId = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+        // DataStore's first read is genuinely async. Without this, the very first composition of
+        // OrkaApp() would see RootUiState()'s default (onboardingCompleted = false) and NavHost
+        // would build its graph with OnboardingRoute as the start destination — then, once the
+        // real (true) value streams in a moment later, the graph gets rebuilt with a different
+        // start destination, which resets NavController's back stack to it. Net effect for a
+        // returning user on every cold start: a visible flash of the onboarding screen before it
+        // snaps to Capture. Holding the splash screen open until the real value is in avoids ever
+        // building the wrong graph in the first place.
+        splashScreen.setKeepOnScreenCondition { !rootViewModel.uiState.value.isSettingsLoaded }
         enableEdgeToEdge()
+        pendingReminderId.value = intent.getStringExtra("reminder_id")
         setContent {
-            OrkaApp()
+            OrkaApp(pendingReminderId = pendingReminderId)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingReminderId.value = intent.getStringExtra("reminder_id")
     }
 }
 
@@ -138,13 +168,14 @@ private data class TopLevelDestination(
 
 data class RootUiState(
     val settings: UserSettings = UserSettings(),
+    val isSettingsLoaded: Boolean = false,
 )
 
 @HiltViewModel
 class RootViewModel @Inject constructor(
     settingsRepository: SettingsRepository,
     modelInstaller: ModelInstaller,
-    taskRepository: TaskRepository,
+    private val taskRepository: TaskRepository,
 ) : ViewModel() {
 
     init {
@@ -159,12 +190,16 @@ class RootViewModel @Inject constructor(
     }
 
     val uiState = settingsRepository.observeSettings()
-        .map { settings -> RootUiState(settings = settings) }
+        .map { settings -> RootUiState(settings = settings, isSettingsLoaded = true) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RootUiState())
+
+    suspend fun resolveTaskIdForReminder(reminderId: String): String? =
+        taskRepository.getReminder(reminderId)?.taskId
 }
 
 @Composable
 fun OrkaApp(
+    pendingReminderId: androidx.compose.runtime.MutableState<String?>? = null,
     viewModel: RootViewModel = hiltViewModel(),
 ) {
     val navController = rememberNavController()
@@ -172,6 +207,19 @@ fun OrkaApp(
     val onboardingCompleted = uiState.settings.onboardingCompleted
     val startRoute = if (onboardingCompleted) CaptureRoute else OnboardingRoute
     val darkTheme = uiState.settings.darkModeOverride ?: isSystemInDarkTheme()
+
+    val reminderId = pendingReminderId?.value
+    LaunchedEffect(reminderId, onboardingCompleted) {
+        if (reminderId != null && onboardingCompleted) {
+            val taskId = viewModel.resolveTaskIdForReminder(reminderId)
+            if (taskId != null) {
+                navController.navigate(TaskDetailRoute(taskId))
+            }
+            // Clear regardless of whether the reminder resolved, so a stale/consumed id doesn't
+            // re-trigger navigation on the next unrelated recomposition (e.g. a theme change).
+            pendingReminderId.value = null
+        }
+    }
 
     // Theme.Orka hardcodes windowLightStatusBar/windowLightNavigationBar to false (light bar
     // icons) identically in both values/ and values-night/ — it can't express ORKA's own
@@ -290,8 +338,18 @@ private fun OrkaBottomBar(
             NavigationBarItem(
                 selected = destination?.hasRoute(item.route::class) == true,
                 onClick = {
+                    // Without popUpTo/saveState/restoreState, bouncing between tabs pushes a new
+                    // back stack entry (and keeps its ViewModel/composable state alive) every
+                    // single tap — the back stack grows without bound for the whole session, and
+                    // the system back button replays tab-visit history instead of behaving like a
+                    // normal bottom-nav app. This is the standard pattern Google's own bottom-nav
+                    // guidance recommends specifically to avoid that.
                     navController.navigate(item.route) {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
+                        }
                         launchSingleTop = true
+                        restoreState = true
                     }
                 },
                 icon = { Icon(item.icon, contentDescription = item.label) },

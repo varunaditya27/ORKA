@@ -1,5 +1,4 @@
 package com.orka.core.common
-import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -56,12 +55,6 @@ object UrgencyCalculator {
             else -> UrgencyTier.CALM
         }
     }
-}
-
-class ClockProvider(
-    val clock: Clock = Clock.systemDefaultZone(),
-) {
-    fun now(): Instant = clock.instant()
 }
 
 /**

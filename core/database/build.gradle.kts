@@ -18,6 +18,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    sourceSets {
+        // MigrationTestHelper reads the exported schema JSON files (one per version) to build
+        // the "before" database for a migration test — without this, it can't find them.
+        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
+    }
 }
 
 kotlin {

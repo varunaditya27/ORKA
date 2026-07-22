@@ -108,6 +108,10 @@ class FakeTaskRepository(
         .flatten()
         .firstOrNull { it.id == reminderId }
 
+    override suspend fun getAllScheduledReminders(): List<ReminderEvent> = remindersFlow.value.values
+        .flatten()
+        .filter { it.status == ReminderStatus.SCHEDULED }
+
     override suspend fun upsertTask(task: Task): Task {
         tasksFlow.value = tasksFlow.value + (task.id to task)
         return task

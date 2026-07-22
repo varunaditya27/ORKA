@@ -26,7 +26,6 @@ import com.orka.core.model.TaskSplitSuggestion
 import com.orka.core.model.TaskSplitter
 import dagger.Binds
 import dagger.Module
-import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
@@ -55,6 +54,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Engine
@@ -65,6 +65,14 @@ import kotlinx.serialization.json.Json
 
 private const val MODEL_FILE_NAME = "gemma-4-E4B-it.litertlm"
 private const val MODEL_MIN_VALID_SIZE_BYTES = 10 * 1024 * 1024L
+
+// Every Gemma call site already falls back to a deterministic default on malformed output or a
+// thrown exception — but a hang (native engine wedged, extreme thermal throttling) is neither of
+// those, it's a coroutine that never resumes. Left unbounded, that would permanently strand
+// whichever caller is waiting: worst case is Alarm's SPLIT_TASK/RESCHEDULE, where the same
+// coroutine also holds an isProcessingSplit/isHandlingAction re-entrancy flag and a BackHandler
+// that swallows back-presses until it clears — an unbounded hang would soft-lock that screen.
+private const val GEMMA_INFERENCE_TIMEOUT_MS = 20_000L
 
 /**
  * Manually `adb push`ed once to this well-known, world-readable device path — never bundled
@@ -363,8 +371,10 @@ class DefaultTaskParser @Inject constructor(
         return try {
             val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
             val response = engine.createConversation().use { conversation ->
-                withContext(Dispatchers.Default) {
-                    conversation.sendMessage(systemPrompt)
+                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                    withContext(Dispatchers.Default) {
+                        conversation.sendMessage(systemPrompt)
+                    }
                 }
             }
             parseJsonToTaskDrafts(response.asText(), rawInput)
@@ -977,8 +987,10 @@ class DefaultTaskSplitter @Inject constructor(
         return try {
             val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
             val response = engine.createConversation().use { conversation ->
-                withContext(Dispatchers.Default) {
-                    conversation.sendMessage(prompt)
+                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                    withContext(Dispatchers.Default) {
+                        conversation.sendMessage(prompt)
+                    }
                 }
             }
             parseSplitResponse(response.asText(), task.estimatedEffortMinutes)
@@ -1062,8 +1074,10 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
         return try {
             val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
             val response = engine.createConversation().use { conversation ->
-                withContext(Dispatchers.Default) {
-                    conversation.sendMessage(prompt)
+                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                    withContext(Dispatchers.Default) {
+                        conversation.sendMessage(prompt)
+                    }
                 }
             }
             parseRescheduleResponse(response.asText(), task.deadline)
@@ -1141,8 +1155,10 @@ class DefaultTaskSnoozeAdvisor @Inject constructor(
         return try {
             val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
             val response = engine.createConversation().use { conversation ->
-                withContext(Dispatchers.Default) {
-                    conversation.sendMessage(prompt)
+                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                    withContext(Dispatchers.Default) {
+                        conversation.sendMessage(prompt)
+                    }
                 }
             }
             val parsed = Json { ignoreUnknownKeys = true }.decodeFromString<LlmSnoozeMinutes>(cleanJson(response.asText()))
@@ -1193,8 +1209,10 @@ class DefaultTaskClarificationAdvisor @Inject constructor(
         return try {
             val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
             val response = engine.createConversation().use { conversation ->
-                withContext(Dispatchers.Default) {
-                    conversation.sendMessage(prompt)
+                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                    withContext(Dispatchers.Default) {
+                        conversation.sendMessage(prompt)
+                    }
                 }
             }
             val parsed = Json { ignoreUnknownKeys = true }.decodeFromString<LlmClarificationDeadline>(cleanJson(response.asText()))
@@ -1354,12 +1372,4 @@ abstract class ParserBindingsModule {
 
     @Binds
     abstract fun bindTaskClarificationAdvisor(impl: DefaultTaskClarificationAdvisor): TaskClarificationAdvisor
-}
-
-@Module
-@InstallIn(SingletonComponent::class)
-object ParserModule {
-    @Provides
-    @Singleton
-    fun provideDefaultZoneId(): ZoneId = ZoneId.systemDefault()
 }

@@ -345,6 +345,7 @@ interface TaskRepository {
     fun observeLastTriggeredReminder(): Flow<ReminderEvent?>
     suspend fun getTask(taskId: String): Task?
     suspend fun getReminder(reminderId: String): ReminderEvent?
+    suspend fun getAllScheduledReminders(): List<ReminderEvent>
     suspend fun upsertTask(task: Task): Task
     suspend fun replaceReminders(taskId: String, reminders: List<ReminderEvent>)
     suspend fun markReminderDelivered(reminderId: String, firedAt: Instant)

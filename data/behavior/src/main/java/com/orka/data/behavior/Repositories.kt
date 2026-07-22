@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.orka.core.database.BehaviorProfileDao
 import com.orka.core.database.MIGRATION_1_2
+import com.orka.core.database.MIGRATION_2_3
 import com.orka.core.database.OrkaDatabase
 import com.orka.core.database.ReminderDao
 import com.orka.core.database.TaskDao
@@ -73,6 +74,8 @@ class RoomTaskRepository @Inject constructor(
     override suspend fun getTask(taskId: String): Task? = taskDao.getTask(taskId)?.asExternalModel()
 
     override suspend fun getReminder(reminderId: String) = reminderDao.getReminder(reminderId)?.asExternalModel()
+
+    override suspend fun getAllScheduledReminders() = reminderDao.getAllScheduled().map { it.asExternalModel() }
 
     override suspend fun upsertTask(task: Task): Task {
         taskDao.upsert(task.asEntity())
@@ -151,7 +154,7 @@ object DatabaseModule {
         context,
         OrkaDatabase::class.java,
         "orka.db",
-    ).addMigrations(MIGRATION_1_2)
+    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
         .fallbackToDestructiveMigration()
         .build()
 

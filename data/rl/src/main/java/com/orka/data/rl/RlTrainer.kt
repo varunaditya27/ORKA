@@ -21,6 +21,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Singleton
 class DefaultRlTrainer @Inject constructor(
@@ -31,6 +33,11 @@ class DefaultRlTrainer @Inject constructor(
 ) : RlTrainer {
 
     private val actionOptions = intArrayOf(1, 2, 4, 6, 12, 24, 48, 72)
+    // Guards rl_weights.txt: without this, an overlapping periodic-worker training run and a
+    // manual "train now" trigger (or two periodic runs racing after a missed run) could interleave
+    // loadWeights()/saveWeights() calls and corrupt the file with interleaved writes, or have one
+    // run's saved weights silently clobbered by the other's stale in-memory copy.
+    private val weightsMutex = Mutex()
 
     override fun observeReadiness(): Flow<RlReadiness> = profileRepository.observeProfile().map { profile ->
         if (profile.totalInteractions >= 40 && profile.totalCompletions >= 10) {
@@ -55,83 +62,86 @@ class DefaultRlTrainer @Inject constructor(
         val interactionEntities = interactionDao.getAllInteractions()
 
         val interactionsByTask = interactionEntities.groupBy { it.taskId }
-        val weights = loadWeights(context)
 
         var episodesUsed = 0
 
-        repeat(10) {
-            for (te in taskEntities) {
-                val task = te.asExternalModel()
-                val taskInteractions = interactionsByTask[task.id]?.sortedBy { it.timestamp } ?: continue
-                if (taskInteractions.isEmpty()) continue
+        weightsMutex.withLock {
+            val weights = loadWeights(context)
 
-                episodesUsed++
-                var consecutiveSnoozes = 0
+            repeat(10) {
+                for (te in taskEntities) {
+                    val task = te.asExternalModel()
+                    val taskInteractions = interactionsByTask[task.id]?.sortedBy { it.timestamp } ?: continue
+                    if (taskInteractions.isEmpty()) continue
 
-                for (j in 0 until taskInteractions.size - 1) {
-                    val currentInt = taskInteractions[j].asExternalModel()
-                    val nextInt = taskInteractions[j + 1].asExternalModel()
+                    episodesUsed++
+                    var consecutiveSnoozes = 0
 
-                    val s = extractStateVector(task, profile, currentInt, consecutiveSnoozes, currentInt.timestamp)
+                    for (j in 0 until taskInteractions.size - 1) {
+                        val currentInt = taskInteractions[j].asExternalModel()
+                        val nextInt = taskInteractions[j + 1].asExternalModel()
 
-                    if (currentInt.type.name.startsWith("SNOOZE")) {
-                        consecutiveSnoozes++
-                    } else {
-                        consecutiveSnoozes = 0
-                    }
+                        val s = extractStateVector(task, profile, currentInt, consecutiveSnoozes, currentInt.timestamp)
 
-                    val hoursDelay = java.time.Duration.between(currentInt.timestamp, nextInt.timestamp).toHours().toInt().coerceAtLeast(1)
-                    val a = getActionIndex(hoursDelay)
+                        if (currentInt.type.name.startsWith("SNOOZE")) {
+                            consecutiveSnoozes++
+                        } else {
+                            consecutiveSnoozes = 0
+                        }
 
-                    var r = 0f
-                    when (nextInt.type) {
-                        InteractionType.START_TASK -> r += 2.0f
-                        InteractionType.IGNORE -> r -= 0.5f
-                        // A stronger negative signal than a snooze/ignore: the user gave up on
-                        // the task entirely rather than just delaying it.
-                        InteractionType.DISMISS_TASK -> r -= 1.0f
-                        else -> {
-                            if (nextInt.type.name.startsWith("SNOOZE")) {
-                                r -= 0.5f
+                        val hoursDelay = java.time.Duration.between(currentInt.timestamp, nextInt.timestamp).toHours().toInt().coerceAtLeast(1)
+                        val a = getActionIndex(hoursDelay)
+
+                        var r = 0f
+                        when (nextInt.type) {
+                            InteractionType.START_TASK -> r += 2.0f
+                            InteractionType.IGNORE -> r -= 0.5f
+                            // A stronger negative signal than a snooze/ignore: the user gave up on
+                            // the task entirely rather than just delaying it.
+                            InteractionType.DISMISS_TASK -> r -= 1.0f
+                            else -> {
+                                if (nextInt.type.name.startsWith("SNOOZE")) {
+                                    r -= 0.5f
+                                }
                             }
                         }
+
+                        val nextHour = nextInt.timestamp.atZone(java.time.ZoneId.of("Asia/Kolkata")).hour
+                        if (nextHour < profile.productiveStartHour || nextHour > profile.productiveEndHour) {
+                            r -= 0.3f
+                        }
+
+                        val isTerminal = nextInt.type == InteractionType.MARK_DONE || j + 1 == taskInteractions.size - 1
+                        val sPr = if (isTerminal) null else extractStateVector(task, profile, nextInt, consecutiveSnoozes, nextInt.timestamp)
+
+                        updateQ(weights, s, a, r, sPr)
                     }
 
-                    val nextHour = nextInt.timestamp.atZone(java.time.ZoneId.of("Asia/Kolkata")).hour
-                    if (nextHour < profile.productiveStartHour || nextHour > profile.productiveEndHour) {
-                        r -= 0.3f
+                    if (task.status == TaskStatus.COMPLETED && taskInteractions.isNotEmpty()) {
+                        val lastInt = taskInteractions.last().asExternalModel()
+                        val s = extractStateVector(task, profile, lastInt, consecutiveSnoozes, lastInt.timestamp)
+                        val a = bestAction(weights, s)
+
+                        var r = 0f
+                        val completedAt = task.completedAt
+                        if (completedAt != null && !completedAt.isAfter(task.deadline)) {
+                            r += 10.0f
+                        } else {
+                            r += 3.0f
+                        }
+
+                        val totalReminders = taskInteractions.size
+                        if (totalReminders > 3) {
+                            r -= (totalReminders - 3) * 0.2f
+                        }
+
+                        updateQ(weights, s, a, r, null)
                     }
-
-                    val isTerminal = nextInt.type == InteractionType.MARK_DONE || j + 1 == taskInteractions.size - 1
-                    val sPr = if (isTerminal) null else extractStateVector(task, profile, nextInt, consecutiveSnoozes, nextInt.timestamp)
-
-                    updateQ(weights, s, a, r, sPr)
-                }
-
-                if (task.status == TaskStatus.COMPLETED && taskInteractions.isNotEmpty()) {
-                    val lastInt = taskInteractions.last().asExternalModel()
-                    val s = extractStateVector(task, profile, lastInt, consecutiveSnoozes, lastInt.timestamp)
-                    val a = bestAction(weights, s)
-
-                    var r = 0f
-                    val completedAt = task.completedAt
-                    if (completedAt != null && !completedAt.isAfter(task.deadline)) {
-                        r += 10.0f
-                    } else {
-                        r += 3.0f
-                    }
-
-                    val totalReminders = taskInteractions.size
-                    if (totalReminders > 3) {
-                        r -= (totalReminders - 3) * 0.2f
-                    }
-
-                    updateQ(weights, s, a, r, null)
                 }
             }
-        }
 
-        saveWeights(context, weights)
+            saveWeights(context, weights)
+        }
 
         return RlTrainingSummary(
             trained = true,
@@ -145,7 +155,7 @@ class DefaultRlTrainer @Inject constructor(
         val ready = profile.totalInteractions >= 40 && profile.totalCompletions >= 10
         if (!ready) return null
 
-        val weights = loadWeights(this.context)
+        val weights = weightsMutex.withLock { loadWeights(this.context) }
         val s = extractStateVector(task, profile, null, 0, context.now)
         val bestActIdx = bestAction(weights, s)
         val nextDelay = actionOptions[bestActIdx]
