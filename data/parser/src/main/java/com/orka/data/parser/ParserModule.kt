@@ -12,11 +12,14 @@ import com.orka.core.model.ParseMode
 import com.orka.core.model.ParserContext
 import com.orka.core.model.TaskCategory
 import com.orka.core.model.TaskDraft
+import com.orka.core.model.BehaviorProfile
+import com.orka.core.model.RescheduleSuggestion
 import com.orka.core.model.Task
 import com.orka.core.model.TaskDraftValidationResult
 import com.orka.core.model.TaskDraftValidator
 import com.orka.core.model.TaskParseResult
 import com.orka.core.model.TaskParser
+import com.orka.core.model.TaskRescheduleAdvisor
 import com.orka.core.model.TaskSplitSuggestion
 import com.orka.core.model.TaskSplitter
 import dagger.Binds
@@ -35,6 +38,7 @@ import java.time.LocalTime
 import java.time.Month
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
 import java.util.UUID
@@ -1005,6 +1009,88 @@ class DefaultTaskSplitter @Inject constructor(
     }
 }
 
+@Serializable
+private data class LlmReschedule(
+    val new_deadline: String,
+    val reason: String,
+)
+
+/**
+ * Elevates the "Reschedule" action beyond a flat "+1 day": asks Gemma for a new deadline that
+ * accounts for the user's actual productive hours and the task's category/effort, rather than
+ * blindly pushing the same time-of-day forward regardless of whether that time ever worked for
+ * this user. Falls back to the mechanical +1 day whenever the model isn't ready, its suggestion
+ * doesn't parse, or lands somewhere implausible (in the past, or absurdly far out).
+ */
+class DefaultTaskRescheduleAdvisor @Inject constructor(
+    private val modelInstaller: ModelInstaller,
+) : TaskRescheduleAdvisor {
+    override suspend fun suggestReschedule(task: Task, profile: BehaviorProfile): RescheduleSuggestion? {
+        val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable()) ?: return null
+
+        val nowIst = ZonedDateTime.now(IST_ZONE_ID)
+        val originalDeadlineIst = task.deadline.atZone(IST_ZONE_ID)
+        val prompt = """
+            You are a scheduling assistant. A task needs to be rescheduled to a realistic future
+            time. Respond with ONLY a JSON object, no explanation, no markdown.
+
+            TASK: "${task.title}"
+            CATEGORY: ${task.category.name}
+            ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
+            ORIGINAL DEADLINE (missed): ${originalDeadlineIst.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}
+            CURRENT TIME: ${nowIst.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}
+            USER'S USUAL PRODUCTIVE HOURS: ${profile.productiveStartHour}:00 to ${profile.productiveEndHour}:00 IST
+
+            Suggest ONE new deadline that is after the current time, ideally falls within the
+            user's productive hours, and leaves enough buffer for the estimated effort. Do not
+            suggest a time more than 14 days after the original deadline.
+
+            Fields:
+            - "new_deadline": ISO 8601 string with IST offset (e.g. "2025-04-05T14:00:00+05:30")
+            - "reason": short (under 12 words) human-readable reason for this choice
+
+            Example: TASK "Submit expense report" (ACADEMIC, 30 minutes), original deadline
+            2025-04-02T23:59:00+05:30, current time 2025-04-03T08:10:00+05:30, productive hours
+            9:00 to 21:00.
+            Output: {"new_deadline":"2025-04-03T10:00:00+05:30","reason":"Tomorrow morning, well within your productive hours"}
+
+            Output JSON:
+        """.trimIndent()
+
+        return try {
+            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
+            val response = engine.createConversation().use { conversation ->
+                withContext(Dispatchers.Default) {
+                    conversation.sendMessage(prompt)
+                }
+            }
+            parseRescheduleResponse(response.asText(), task.deadline)
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun parseRescheduleResponse(response: String, originalDeadline: Instant): RescheduleSuggestion? {
+        return try {
+            val parsed = Json { ignoreUnknownKeys = true }.decodeFromString<LlmReschedule>(cleanJson(response))
+            val newDeadline = runCatching { ZonedDateTime.parse(parsed.new_deadline).toInstant() }.getOrNull() ?: return null
+            val now = Instant.now()
+
+            // Must actually be a real reschedule into a sane future window, not a hallucinated
+            // time in the past or absurdly far out.
+            if (newDeadline.isBefore(now.plusSeconds(60))) return null
+            if (newDeadline.isAfter(originalDeadline.plus(Duration.ofDays(14)))) return null
+            if (parsed.reason.isBlank()) return null
+
+            RescheduleSuggestion(newDeadline = newDeadline, reason = parsed.reason.take(120))
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+}
+
 @Singleton
 class CompanionKitModelInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -1141,6 +1227,9 @@ abstract class ParserBindingsModule {
 
     @Binds
     abstract fun bindTaskSplitter(impl: DefaultTaskSplitter): TaskSplitter
+
+    @Binds
+    abstract fun bindTaskRescheduleAdvisor(impl: DefaultTaskRescheduleAdvisor): TaskRescheduleAdvisor
 }
 
 @Module

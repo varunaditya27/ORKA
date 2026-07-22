@@ -30,6 +30,7 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.core.designsystem)
     implementation(projects.core.database)
+    implementation(projects.data.parser)
     implementation(projects.data.scheduler)
     implementation(projects.data.execution)
     implementation(libs.androidx.lifecycle.runtime.ktx)

@@ -23,6 +23,7 @@ import com.orka.core.model.InteractionEvent
 import com.orka.core.model.InteractionType
 import com.orka.core.model.Task
 import com.orka.core.model.TaskRepository
+import com.orka.core.model.TaskRescheduleAdvisor
 import com.orka.core.model.TaskStatus
 import com.orka.data.scheduler.SchedulerOrchestrator
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,6 +42,7 @@ data class TaskDetailUiState(
     val task: Task? = null,
     val interactions: List<InteractionEvent> = emptyList(),
     val reminders: List<com.orka.core.model.ReminderEvent> = emptyList(),
+    val rescheduleMessage: String? = null,
 )
 
 @HiltViewModel
@@ -48,16 +50,19 @@ class TaskDetailViewModel @Inject constructor(
     private val taskRepository: TaskRepository,
     private val behaviorProfileRepository: BehaviorProfileRepository,
     private val schedulerOrchestrator: SchedulerOrchestrator,
+    private val taskRescheduleAdvisor: TaskRescheduleAdvisor,
 ) : ViewModel() {
     private val taskId = MutableStateFlow<String?>(null)
+    private val rescheduleMessage = MutableStateFlow<String?>(null)
 
     val uiState = taskId.filterNotNull().flatMapLatest { id ->
         combine(
             taskRepository.observeTask(id),
             taskRepository.observeInteractions(id),
             taskRepository.observeReminders(id),
-        ) { task, interactions, reminders ->
-            TaskDetailUiState(task = task, interactions = interactions, reminders = reminders)
+            rescheduleMessage,
+        ) { task, interactions, reminders, message ->
+            TaskDetailUiState(task = task, interactions = interactions, reminders = reminders, rescheduleMessage = message)
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
 
@@ -76,22 +81,29 @@ class TaskDetailViewModel @Inject constructor(
         }
     }
 
-    fun rescheduleOneDay() {
+    fun reschedule() {
         val task = uiState.value.task ?: return
         viewModelScope.launch {
-            val newDeadline = task.deadline.plus(Duration.ofDays(1))
+            rescheduleMessage.value = null
+            val profile = behaviorProfileRepository.getProfile()
+            // Prefer a deadline that respects the user's actual productive hours over blindly
+            // repeating the same time-of-day that was already missed once.
+            val suggestion = runCatching { taskRescheduleAdvisor.suggestReschedule(task, profile) }.getOrNull()
+            val newDeadline = suggestion?.newDeadline ?: task.deadline.plus(Duration.ofDays(1))
+            // Keep eventStartTime in sync with whatever delta was actually applied, rather than
+            // assuming it's always exactly one day.
+            val appliedDelta = Duration.between(task.deadline, newDeadline)
             val updatedTask = task.copy(
                 deadline = newDeadline,
-                eventStartTime = task.eventStartTime?.plus(Duration.ofDays(1)),
+                eventStartTime = task.eventStartTime?.plus(appliedDelta),
                 updatedAt = Instant.now(),
                 status = TaskStatus.PENDING,
                 // Must be recomputed — it drives the Tasks list sort order
-                // (`ORDER BY urgencyScore DESC`), and pushing the deadline out a day without
-                // updating it would leave the task sorted by its old, now-stale urgency.
+                // (`ORDER BY urgencyScore DESC`), and pushing the deadline out without updating
+                // it would leave the task sorted by its old, now-stale urgency.
                 urgencyScore = UrgencyCalculator.urgencyScore(newDeadline, Instant.now(), task.estimatedEffortMinutes),
             )
             taskRepository.upsertTask(updatedTask)
-            val profile = behaviorProfileRepository.getProfile()
             val (_, reminders) = schedulerOrchestrator.schedule(
                 updatedTask,
                 com.orka.core.model.SchedulingContext(
@@ -100,6 +112,9 @@ class TaskDetailViewModel @Inject constructor(
                 ),
             )
             schedulerOrchestrator.persistSchedule(updatedTask.id, reminders)
+            rescheduleMessage.value = suggestion?.let {
+                "Rescheduled to ${TimeFormatter.formatInstant(newDeadline)} — ${it.reason}"
+            }
         }
     }
 
@@ -158,14 +173,21 @@ fun TaskDetailRoute(
                                 onClick = viewModel::markDone,
                             )
                             OrkaActionButton(
-                                text = "Reschedule +1 day",
+                                text = "Reschedule",
                                 emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
-                                onClick = viewModel::rescheduleOneDay,
+                                onClick = viewModel::reschedule,
                             )
                             OrkaActionButton(
                                 text = "Dismiss task",
                                 emphasis = com.orka.core.model.ActionEmphasis.TERTIARY,
                                 onClick = viewModel::dismissTask,
+                            )
+                        }
+                        state.rescheduleMessage?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.primary,
                             )
                         }
                         Text("Upcoming reminders", style = MaterialTheme.typography.headlineMedium)

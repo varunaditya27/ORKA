@@ -23,9 +23,11 @@ import com.orka.core.model.SettingsRepository
 import com.orka.core.model.SchedulingContext
 import com.orka.core.model.Task
 import com.orka.core.model.TaskMetrics
+import com.orka.core.model.RescheduleSuggestion
 import com.orka.core.model.TaskParseResult
 import com.orka.core.model.TaskParser
 import com.orka.core.model.TaskRepository
+import com.orka.core.model.TaskRescheduleAdvisor
 import com.orka.core.model.TaskSplitSuggestion
 import com.orka.core.model.TaskSplitter
 import com.orka.core.model.TaskStatus
@@ -320,4 +322,10 @@ class FakeTaskSplitter(
     var nextSuggestion: TaskSplitSuggestion? = null,
 ) : TaskSplitter {
     override suspend fun suggestSplit(task: Task): TaskSplitSuggestion? = nextSuggestion
+}
+
+class FakeTaskRescheduleAdvisor(
+    var nextSuggestion: RescheduleSuggestion? = null,
+) : TaskRescheduleAdvisor {
+    override suspend fun suggestReschedule(task: Task, profile: BehaviorProfile): RescheduleSuggestion? = nextSuggestion
 }

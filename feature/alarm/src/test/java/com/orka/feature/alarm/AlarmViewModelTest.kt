@@ -8,6 +8,7 @@ import com.orka.core.testing.FakeAlarmRegistrar
 import com.orka.core.testing.FakeBehaviorProfileRepository
 import com.orka.core.testing.FakeSettingsRepository
 import com.orka.core.testing.FakeTaskRepository
+import com.orka.core.testing.FakeTaskRescheduleAdvisor
 import com.orka.core.testing.FakeTaskSplitter
 import com.orka.core.testing.FakeRlTrainer
 import com.orka.core.testing.MainDispatcherRule
@@ -41,6 +42,7 @@ class AlarmViewModelTest {
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -78,6 +80,7 @@ class AlarmViewModelTest {
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -131,6 +134,7 @@ class AlarmViewModelTest {
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = taskSplitter,
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -156,6 +160,83 @@ class AlarmViewModelTest {
     }
 
     @Test
+    fun rescheduleUsesGemmaSuggestionWhenAvailableAndKeepsEventStartTimeInSync() = runTest(mainDispatcherRule.dispatcher) {
+        val originalDeadline = TestFixtures.now.minusSeconds(3600)
+        val task = TestFixtures.task(
+            id = "task-reschedule-gemma",
+            deadline = originalDeadline,
+            primitiveType = com.orka.core.model.PrimitiveType.EVENT,
+            eventStartTime = originalDeadline,
+        )
+        val reminder = TestFixtures.reminder(id = "reminder-reschedule-gemma", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val suggestedDeadline = TestFixtures.now.plusSeconds(3600 * 30)
+        val rescheduleAdvisor = FakeTaskRescheduleAdvisor(
+            nextSuggestion = com.orka.core.model.RescheduleSuggestion(
+                newDeadline = suggestedDeadline,
+                reason = "Fits your evening productive hours",
+            ),
+        )
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = DefaultAlarmActionResolver(),
+            taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = rescheduleAdvisor,
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+        viewModel.handleAction(InteractionType.RESCHEDULE) {}
+        advanceUntilIdle()
+
+        val updated = taskRepository.getTask(task.id)
+        assertThat(updated?.deadline).isEqualTo(suggestedDeadline)
+        assertThat(updated?.eventStartTime).isEqualTo(suggestedDeadline)
+        assertThat(updated?.status).isEqualTo(TaskStatus.PENDING)
+    }
+
+    @Test
+    fun rescheduleFallsBackToPlusOneDayWhenGemmaSuggestionUnavailable() = runTest(mainDispatcherRule.dispatcher) {
+        val originalDeadline = TestFixtures.now.minusSeconds(3600)
+        val task = TestFixtures.task(id = "task-reschedule-fallback", deadline = originalDeadline)
+        val reminder = TestFixtures.reminder(id = "reminder-reschedule-fallback", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = DefaultAlarmActionResolver(),
+            taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(nextSuggestion = null),
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+        viewModel.handleAction(InteractionType.RESCHEDULE) {}
+        advanceUntilIdle()
+
+        assertThat(taskRepository.getTask(task.id)?.deadline).isEqualTo(originalDeadline.plus(Duration.ofDays(1)))
+    }
+
+    @Test
     fun loadExposesResolvedActionSurface() = runTest(mainDispatcherRule.dispatcher) {
         val task = TestFixtures.task(id = "task-actions", deadline = TestFixtures.now.plus(Duration.ofHours(5)))
         val reminder = TestFixtures.reminder(id = "reminder-actions", taskId = task.id)
@@ -170,6 +251,7 @@ class AlarmViewModelTest {
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = FakeAlarmActionResolver(expectedActions),
             taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),

@@ -28,6 +28,7 @@ import com.orka.core.model.InteractionEvent
 import com.orka.core.model.InteractionType
 import com.orka.core.model.Task
 import com.orka.core.model.TaskRepository
+import com.orka.core.model.TaskRescheduleAdvisor
 import com.orka.core.model.TaskSplitter
 import com.orka.core.model.TaskStatus
 import com.orka.data.scheduler.SchedulerOrchestrator
@@ -57,6 +58,7 @@ class AlarmViewModel @Inject constructor(
     private val actionResolver: AlarmActionResolver,
     private val schedulerOrchestrator: SchedulerOrchestrator,
     private val taskSplitter: TaskSplitter,
+    private val taskRescheduleAdvisor: TaskRescheduleAdvisor,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AlarmUiState())
     val uiState = _uiState.asStateFlow()
@@ -90,19 +92,25 @@ class AlarmViewModel @Inject constructor(
                 }
 
                 InteractionType.RESCHEDULE -> {
-                    val newDeadline = task.deadline.plus(Duration.ofDays(1))
+                    val profile = behaviorProfileRepository.getProfile()
+                    // Prefer a deadline that respects the user's actual productive hours over
+                    // blindly repeating the same time-of-day that was already missed once.
+                    val suggestion = runCatching { taskRescheduleAdvisor.suggestReschedule(task, profile) }.getOrNull()
+                    val newDeadline = suggestion?.newDeadline ?: task.deadline.plus(Duration.ofDays(1))
+                    // Keep eventStartTime in sync with whatever delta was actually applied,
+                    // rather than assuming it's always exactly one day.
+                    val appliedDelta = Duration.between(task.deadline, newDeadline)
                     val updated = task.copy(
                         deadline = newDeadline,
-                        eventStartTime = task.eventStartTime?.plus(Duration.ofDays(1)),
+                        eventStartTime = task.eventStartTime?.plus(appliedDelta),
                         updatedAt = Instant.now(),
                         status = TaskStatus.PENDING,
                         // Must be recomputed — it drives the Tasks list sort order
-                        // (`ORDER BY urgencyScore DESC`), and pushing the deadline out a day
+                        // (`ORDER BY urgencyScore DESC`), and pushing the deadline out
                         // without updating it would leave the task sorted by its old urgency.
                         urgencyScore = UrgencyCalculator.urgencyScore(newDeadline, Instant.now(), task.estimatedEffortMinutes),
                     )
                     taskRepository.upsertTask(updated)
-                    val profile = behaviorProfileRepository.getProfile()
                     val (_, reminders) = schedulerOrchestrator.schedule(
                         updated,
                         com.orka.core.model.SchedulingContext(

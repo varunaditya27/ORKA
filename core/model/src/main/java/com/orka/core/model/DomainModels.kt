@@ -302,6 +302,19 @@ interface TaskSplitter {
     suspend fun suggestSplit(task: Task): TaskSplitSuggestion?
 }
 
+data class RescheduleSuggestion(
+    val newDeadline: Instant,
+    val reason: String,
+)
+
+/**
+ * Suggests a smarter reschedule time than a flat "+1 day" — one that accounts for the user's
+ * productive hours, the task's category/effort, and the original deadline.
+ */
+interface TaskRescheduleAdvisor {
+    suspend fun suggestReschedule(task: Task, profile: BehaviorProfile): RescheduleSuggestion?
+}
+
 interface TaskDraftValidator {
     fun validate(draft: TaskDraft): TaskDraftValidationResult
 }
