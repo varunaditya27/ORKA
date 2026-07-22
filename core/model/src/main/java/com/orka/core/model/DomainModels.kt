@@ -315,6 +315,21 @@ interface TaskRescheduleAdvisor {
     suspend fun suggestReschedule(task: Task, profile: BehaviorProfile): RescheduleSuggestion?
 }
 
+/**
+ * Suggests how long to snooze for, instead of a one-size-fits-all fixed duration, given the
+ * task's own context. `isLongSnooze` mirrors which of the two mutually-exclusive snooze tiers
+ * [AlarmActionResolver] decided to offer (short: task is urgent; long: plenty of time left) —
+ * the suggested minutes must stay within that tier's intent, not cross into the other one.
+ */
+interface TaskSnoozeAdvisor {
+    suspend fun suggestSnoozeMinutes(task: Task, isLongSnooze: Boolean): Int?
+}
+
+/** Suggests a concrete deadline when a captured task is too vague to resolve one automatically. */
+interface TaskClarificationAdvisor {
+    suspend fun suggestDeadline(draft: TaskDraft): Instant?
+}
+
 interface TaskDraftValidator {
     fun validate(draft: TaskDraft): TaskDraftValidationResult
 }

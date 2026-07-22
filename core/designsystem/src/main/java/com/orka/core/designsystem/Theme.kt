@@ -37,6 +37,7 @@ import com.orka.core.common.UrgencyTier
 import com.orka.core.common.UrgencyCalculator
 import com.orka.core.model.ActionEmphasis
 import com.orka.core.model.Task
+import com.orka.core.model.TaskStatus
 import java.time.Duration
 import java.time.Instant
 
@@ -160,8 +161,17 @@ fun OrkaTaskCard(
     now: Instant = Instant.now(),
     onClick: () -> Unit = {},
 ) {
+    // A completed/dismissed task's deadline is often in the past by the time it's viewed in
+    // Archive — comparing it against "now" would mislabel an on-time completion from weeks ago
+    // as "OVERDUE". Terminal statuses get a status line instead of the live countdown/urgency
+    // accent, which only make sense for tasks that are still pending action.
+    val isTerminal = task.status == TaskStatus.COMPLETED || task.status == TaskStatus.DISMISSED
     val tier = UrgencyCalculator.tier(task.deadline, now)
-    val accent = urgencyColor(tier)
+    val accent = if (isTerminal) {
+        if (task.status == TaskStatus.COMPLETED) OrkaSuccess else OrkaTextSecondary
+    } else {
+        urgencyColor(tier)
+    }
     val timeLeft = Duration.between(now, task.deadline)
 
     Card(
@@ -199,13 +209,20 @@ fun OrkaTaskCard(
                 ) {
                     CategoryPill(task.category.name.lowercase().replaceFirstChar(Char::titlecase), accent = categoryColor(task.category))
                     Text(
-                        text = if (timeLeft.isNegative) {
-                            "OVERDUE ${TimeFormatter.humanizeDuration(timeLeft.abs())}"
-                        } else {
-                            "due in ${TimeFormatter.humanizeDuration(timeLeft)}"
+                        text = when {
+                            task.status == TaskStatus.COMPLETED ->
+                                "Completed ${TimeFormatter.formatInstant(task.completedAt ?: task.updatedAt)}"
+                            task.status == TaskStatus.DISMISSED ->
+                                "Dismissed ${TimeFormatter.formatInstant(task.updatedAt)}"
+                            timeLeft.isNegative -> "OVERDUE ${TimeFormatter.humanizeDuration(timeLeft.abs())}"
+                            else -> "due in ${TimeFormatter.humanizeDuration(timeLeft)}"
                         },
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (tier == UrgencyTier.CRITICAL) OrkaRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = when {
+                            isTerminal -> MaterialTheme.colorScheme.onSurfaceVariant
+                            tier == UrgencyTier.CRITICAL -> OrkaRed
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
             }

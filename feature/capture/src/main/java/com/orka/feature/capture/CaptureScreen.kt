@@ -48,6 +48,7 @@ import com.orka.core.model.ReminderEvent
 import com.orka.core.model.SchedulerMode
 import com.orka.core.model.SchedulingContext
 import com.orka.core.model.Task
+import com.orka.core.model.TaskClarificationAdvisor
 import com.orka.core.model.TaskDraft
 import com.orka.core.model.TaskDraftValidator
 import com.orka.core.model.TaskParser
@@ -88,6 +89,7 @@ data class CaptureUiState(
     val errorMessage: String? = null,
     val infoMessage: String? = null,
     val createdTaskId: String? = null,
+    val smartClarificationInstant: Instant? = null,
 )
 
 @HiltViewModel
@@ -97,6 +99,7 @@ class CaptureViewModel @Inject constructor(
     private val taskRepository: TaskRepository,
     private val behaviorProfileRepository: BehaviorProfileRepository,
     private val schedulerOrchestrator: SchedulerOrchestrator,
+    private val taskClarificationAdvisor: TaskClarificationAdvisor,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(CaptureUiState())
     val uiState = _uiState.asStateFlow()
@@ -113,6 +116,7 @@ class CaptureViewModel @Inject constructor(
             errorMessage = null,
             infoMessage = null,
             createdTaskId = null,
+            smartClarificationInstant = null,
         )
     }
 
@@ -145,7 +149,28 @@ class CaptureViewModel @Inject constructor(
                 warningMessage = result.issues.firstOrNull(),
                 errorMessage = null,
                 infoMessage = null,
+                smartClarificationInstant = null,
             )
+
+            // Never block showing the clarification sheet on this — the static quick-picks
+            // (Today 6pm / Tomorrow 9am / this week end) are always available immediately;
+            // this just adds a task-specific option alongside them if/when it's ready.
+            val draft = result.draft
+            val reason = draft.clarificationReason
+            if (draft.clarificationNeeded &&
+                (reason == ClarificationReason.NO_DEADLINE_DETECTED || reason == ClarificationReason.VAGUE_TEMPORAL_EXPRESSION)
+            ) {
+                launch {
+                    val suggestion = runCatching { taskClarificationAdvisor.suggestDeadline(draft) }.getOrNull()
+                        ?: return@launch
+                    val current = _uiState.value
+                    // Only apply if the user is still looking at this same clarification —
+                    // they may have already typed something new or resolved it another way.
+                    if (current.draft?.rawInput == draft.rawInput && current.draft?.clarificationNeeded == true) {
+                        _uiState.value = current.copy(smartClarificationInstant = suggestion)
+                    }
+                }
+            }
         }
     }
 
@@ -159,6 +184,7 @@ class CaptureViewModel @Inject constructor(
             warningMessage = null,
             errorMessage = null,
             infoMessage = null,
+            smartClarificationInstant = null,
         )
     }
 
@@ -209,6 +235,7 @@ class CaptureViewModel @Inject constructor(
                 warningMessage = null,
                 errorMessage = null,
                 selectedDraftIndex = current.selectedDraftIndex.coerceIn(0, updated.lastIndex),
+                smartClarificationInstant = null,
             )
         }
     }
@@ -464,6 +491,7 @@ private fun ClarificationChoiceCard(
 private fun ClarificationSheet(
     reason: ClarificationReason,
     draft: TaskDraft,
+    smartSuggestion: Instant?,
     onApply: (Instant) -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -497,6 +525,15 @@ private fun ClarificationSheet(
                 ClarificationReason.NO_DEADLINE_DETECTED,
                 ClarificationReason.VAGUE_TEMPORAL_EXPRESSION,
                 -> {
+                    smartSuggestion?.let { suggested ->
+                        ClarificationChoiceCard(
+                            title = suggested.atZone(IST_ZONE).format(PREVIEW_TIME_FORMATTER),
+                            subtitle = "Suggested for this task",
+                        ) {
+                            onApply(suggested)
+                        }
+                    }
+
                     ClarificationChoiceCard(
                         title = "Today · 6:00 PM",
                         subtitle = "Quick schedule",
@@ -751,6 +788,7 @@ fun CaptureRoute(
                 ClarificationSheet(
                     reason = clarificationReason,
                     draft = primaryDraft,
+                    smartSuggestion = state.smartClarificationInstant,
                     onApply = viewModel::applyClarification,
                     onCancel = viewModel::dismissDraft,
                 )

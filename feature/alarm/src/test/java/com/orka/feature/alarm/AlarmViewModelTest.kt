@@ -9,6 +9,7 @@ import com.orka.core.testing.FakeBehaviorProfileRepository
 import com.orka.core.testing.FakeSettingsRepository
 import com.orka.core.testing.FakeTaskRepository
 import com.orka.core.testing.FakeTaskRescheduleAdvisor
+import com.orka.core.testing.FakeTaskSnoozeAdvisor
 import com.orka.core.testing.FakeTaskSplitter
 import com.orka.core.testing.FakeRlTrainer
 import com.orka.core.testing.MainDispatcherRule
@@ -19,6 +20,7 @@ import com.orka.data.scheduler.PreEventSchedulerPolicy
 import com.orka.data.scheduler.RuleBasedSchedulerPolicy
 import com.orka.data.scheduler.SchedulerOrchestrator
 import java.time.Duration
+import java.time.Instant
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -43,6 +45,7 @@ class AlarmViewModelTest {
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = FakeTaskSplitter(),
             taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -81,6 +84,7 @@ class AlarmViewModelTest {
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = FakeTaskSplitter(),
             taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -135,6 +139,7 @@ class AlarmViewModelTest {
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = taskSplitter,
             taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -183,6 +188,7 @@ class AlarmViewModelTest {
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = FakeTaskSplitter(),
             taskRescheduleAdvisor = rescheduleAdvisor,
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -217,6 +223,7 @@ class AlarmViewModelTest {
             actionResolver = DefaultAlarmActionResolver(),
             taskSplitter = FakeTaskSplitter(),
             taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(nextSuggestion = null),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -237,21 +244,112 @@ class AlarmViewModelTest {
     }
 
     @Test
+    fun loadAppliesGemmaSuggestedSnoozeDurationToLabelAndSchedule() = runTest(mainDispatcherRule.dispatcher) {
+        val task = TestFixtures.task(id = "task-snooze", deadline = TestFixtures.now.plus(Duration.ofHours(5)))
+        val reminder = TestFixtures.reminder(id = "reminder-snooze", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val snoozeAdvisor = FakeTaskSnoozeAdvisor(nextSuggestedMinutes = 45)
+        // A deterministic resolver, not DefaultAlarmActionResolver: its contextAction depends on
+        // real wall-clock Instant.now() vs. task.deadline, which is unrelated to what this test
+        // is actually verifying (that a Gemma suggestion updates the snooze label/schedule).
+        val actionResolver = FakeAlarmActionResolver(
+            listOf(TestFixtures.alarmAction(type = InteractionType.SNOOZE_SHORT, label = "Snooze 30 min")),
+        )
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = actionResolver,
+            taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = snoozeAdvisor,
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertThat(state.snoozeDurations[InteractionType.SNOOZE_SHORT]).isEqualTo(Duration.ofMinutes(45))
+        val snoozeAction = state.actions.first { it.type == InteractionType.SNOOZE_SHORT }
+        assertThat(snoozeAction.label).isEqualTo("Snooze 45m")
+
+        val before = Instant.now()
+        viewModel.handleAction(InteractionType.SNOOZE_SHORT) {}
+        advanceUntilIdle()
+        val after = Instant.now()
+
+        val scheduled = taskRepository.observeReminders(task.id).first().single()
+        assertThat(scheduled.scheduledTime).isAtLeast(before.plus(Duration.ofMinutes(45)))
+        assertThat(scheduled.scheduledTime).isAtMost(after.plus(Duration.ofMinutes(45)))
+    }
+
+    @Test
+    fun loadKeepsFixedSnoozeDurationWhenGemmaSuggestionUnavailable() = runTest(mainDispatcherRule.dispatcher) {
+        val task = TestFixtures.task(id = "task-snooze-fallback", deadline = TestFixtures.now.plus(Duration.ofHours(5)))
+        val reminder = TestFixtures.reminder(id = "reminder-snooze-fallback", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val actionResolver = FakeAlarmActionResolver(
+            listOf(TestFixtures.alarmAction(type = InteractionType.SNOOZE_SHORT, label = "Snooze 30 min")),
+        )
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = actionResolver,
+            taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(nextSuggestedMinutes = null),
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertThat(state.snoozeDurations[InteractionType.SNOOZE_SHORT]).isEqualTo(Duration.ofMinutes(30))
+        val snoozeAction = state.actions.first { it.type == InteractionType.SNOOZE_SHORT }
+        assertThat(snoozeAction.label).isEqualTo("Snooze 30m")
+    }
+
+    @Test
     fun loadExposesResolvedActionSurface() = runTest(mainDispatcherRule.dispatcher) {
         val task = TestFixtures.task(id = "task-actions", deadline = TestFixtures.now.plus(Duration.ofHours(5)))
         val reminder = TestFixtures.reminder(id = "reminder-actions", taskId = task.id)
         val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
         val expectedActions = listOf(
             TestFixtures.alarmAction(type = InteractionType.START_TASK, label = "Start Now"),
+            // AlarmViewModel rewrites SNOOZE_* labels to reflect the actual duration that will
+            // be used ("Snooze 30m", from the default map) regardless of what the resolver
+            // originally labeled it — this is intentional; see the loadKeepsFixed/loadApplies
+            // snooze tests for that behavior specifically.
             TestFixtures.alarmAction(type = InteractionType.SNOOZE_SHORT, label = "Snooze 30 min"),
             TestFixtures.alarmAction(type = InteractionType.MARK_DONE, label = "Done"),
         )
+        val expectedActionsAfterSnoozeLabelRewrite = expectedActions.map {
+            if (it.type == InteractionType.SNOOZE_SHORT) it.copy(label = "Snooze 30m") else it
+        }
         val viewModel = AlarmViewModel(
             taskRepository = taskRepository,
             behaviorProfileRepository = FakeBehaviorProfileRepository(),
             actionResolver = FakeAlarmActionResolver(expectedActions),
             taskSplitter = FakeTaskSplitter(),
             taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
             schedulerOrchestrator = SchedulerOrchestrator(
                 ruleBased = RuleBasedSchedulerPolicy(),
                 adaptive = AdaptiveSchedulerPolicy(),
@@ -268,6 +366,6 @@ class AlarmViewModelTest {
 
         val state = viewModel.uiState.value
         assertThat(state.task?.id).isEqualTo(task.id)
-        assertThat(state.actions).containsExactlyElementsIn(expectedActions).inOrder()
+        assertThat(state.actions).containsExactlyElementsIn(expectedActionsAfterSnoozeLabelRewrite).inOrder()
     }
 }

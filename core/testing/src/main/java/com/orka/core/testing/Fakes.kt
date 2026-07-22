@@ -24,10 +24,12 @@ import com.orka.core.model.SchedulingContext
 import com.orka.core.model.Task
 import com.orka.core.model.TaskMetrics
 import com.orka.core.model.RescheduleSuggestion
+import com.orka.core.model.TaskClarificationAdvisor
 import com.orka.core.model.TaskParseResult
 import com.orka.core.model.TaskParser
 import com.orka.core.model.TaskRepository
 import com.orka.core.model.TaskRescheduleAdvisor
+import com.orka.core.model.TaskSnoozeAdvisor
 import com.orka.core.model.TaskSplitSuggestion
 import com.orka.core.model.TaskSplitter
 import com.orka.core.model.TaskStatus
@@ -328,4 +330,16 @@ class FakeTaskRescheduleAdvisor(
     var nextSuggestion: RescheduleSuggestion? = null,
 ) : TaskRescheduleAdvisor {
     override suspend fun suggestReschedule(task: Task, profile: BehaviorProfile): RescheduleSuggestion? = nextSuggestion
+}
+
+class FakeTaskSnoozeAdvisor(
+    var nextSuggestedMinutes: Int? = null,
+) : TaskSnoozeAdvisor {
+    override suspend fun suggestSnoozeMinutes(task: Task, isLongSnooze: Boolean): Int? = nextSuggestedMinutes
+}
+
+class FakeTaskClarificationAdvisor(
+    var nextDeadline: Instant? = null,
+) : TaskClarificationAdvisor {
+    override suspend fun suggestDeadline(draft: TaskDraft): Instant? = nextDeadline
 }

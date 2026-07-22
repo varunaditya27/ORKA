@@ -19,7 +19,9 @@ import com.orka.core.model.TaskDraftValidationResult
 import com.orka.core.model.TaskDraftValidator
 import com.orka.core.model.TaskParseResult
 import com.orka.core.model.TaskParser
+import com.orka.core.model.TaskClarificationAdvisor
 import com.orka.core.model.TaskRescheduleAdvisor
+import com.orka.core.model.TaskSnoozeAdvisor
 import com.orka.core.model.TaskSplitSuggestion
 import com.orka.core.model.TaskSplitter
 import dagger.Binds
@@ -1091,6 +1093,122 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
     }
 }
 
+@Serializable
+private data class LlmSnoozeMinutes(val snooze_minutes: Int)
+
+private const val SHORT_SNOOZE_MIN_MINUTES = 5
+private const val SHORT_SNOOZE_MAX_MINUTES = 120
+private const val LONG_SNOOZE_MIN_MINUTES = 60
+private const val LONG_SNOOZE_MAX_MINUTES = 360
+
+/**
+ * Elevates the fixed 30-minute/3-hour snooze buttons: asks Gemma for a duration that actually
+ * fits the task (a quick 10-minute call vs. a 90-minute report review shouldn't get the same
+ * "snooze 30 min" treatment). Bounded to the tier [AlarmActionResolver] already decided on —
+ * this only adjusts the number within that tier, never which tier is offered. Falls back to the
+ * caller's fixed default whenever the model isn't ready or its answer falls outside those bounds.
+ */
+class DefaultTaskSnoozeAdvisor @Inject constructor(
+    private val modelInstaller: ModelInstaller,
+) : TaskSnoozeAdvisor {
+    override suspend fun suggestSnoozeMinutes(task: Task, isLongSnooze: Boolean): Int? {
+        val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable()) ?: return null
+
+        val (minMinutes, maxMinutes) = if (isLongSnooze) {
+            LONG_SNOOZE_MIN_MINUTES to LONG_SNOOZE_MAX_MINUTES
+        } else {
+            SHORT_SNOOZE_MIN_MINUTES to SHORT_SNOOZE_MAX_MINUTES
+        }
+
+        val prompt = """
+            You are helping decide how long to snooze a task reminder. Respond with ONLY a JSON
+            object, no explanation, no markdown.
+
+            TASK: "${task.title}"
+            CATEGORY: ${task.category.name}
+            ESTIMATED EFFORT: ${task.estimatedEffortMinutes} minutes
+            SNOOZE TIER: ${if (isLongSnooze) "long — this task still has plenty of time left" else "short — this task is urgent"}
+
+            Suggest how many minutes to wait before reminding again. The value MUST be between
+            $minMinutes and $maxMinutes minutes.
+
+            Fields:
+            - "snooze_minutes": integer between $minMinutes and $maxMinutes
+
+            Output JSON:
+        """.trimIndent()
+
+        return try {
+            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
+            val response = engine.createConversation().use { conversation ->
+                withContext(Dispatchers.Default) {
+                    conversation.sendMessage(prompt)
+                }
+            }
+            val parsed = Json { ignoreUnknownKeys = true }.decodeFromString<LlmSnoozeMinutes>(cleanJson(response.asText()))
+            parsed.snooze_minutes.takeIf { it in minMinutes..maxMinutes }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        }
+    }
+}
+
+@Serializable
+private data class LlmClarificationDeadline(val deadline: String)
+
+/**
+ * Elevates the Capture flow's clarification quick-picks beyond generic "Today 6pm"/"Tomorrow
+ * 9am" defaults when the input was too vague to resolve a deadline at all: asks Gemma for one
+ * concrete deadline suggestion tailored to what the task actually is. Presented as an *extra*
+ * option alongside the existing static ones (never replaces them) so there's always a
+ * deterministic choice available regardless of whether this succeeds.
+ */
+class DefaultTaskClarificationAdvisor @Inject constructor(
+    private val modelInstaller: ModelInstaller,
+) : TaskClarificationAdvisor {
+    override suspend fun suggestDeadline(draft: TaskDraft): Instant? {
+        val modelFile = resolveReadyModelFile(modelInstaller.installBundledModelIfAvailable()) ?: return null
+
+        val nowIst = ZonedDateTime.now(IST_ZONE_ID)
+        val prompt = """
+            You are a scheduling assistant. The task below has no clear deadline. Suggest ONE
+            concrete, reasonable deadline for it. Respond with ONLY a JSON object, no
+            explanation, no markdown.
+
+            TASK: "${draft.title.ifBlank { draft.rawInput }}"
+            RAW INPUT: "${draft.rawInput}"
+            CATEGORY: ${draft.category.name}
+            ESTIMATED EFFORT: ${draft.estimatedEffortMinutes} minutes
+            CURRENT TIME: ${nowIst.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}
+
+            The deadline must be in the future and within the next 30 days.
+
+            Fields:
+            - "deadline": ISO 8601 string with IST offset (e.g. "2025-04-05T18:00:00+05:30")
+
+            Output JSON:
+        """.trimIndent()
+
+        return try {
+            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
+            val response = engine.createConversation().use { conversation ->
+                withContext(Dispatchers.Default) {
+                    conversation.sendMessage(prompt)
+                }
+            }
+            val parsed = Json { ignoreUnknownKeys = true }.decodeFromString<LlmClarificationDeadline>(cleanJson(response.asText()))
+            val deadline = runCatching { ZonedDateTime.parse(parsed.deadline).toInstant() }.getOrNull() ?: return null
+            val now = Instant.now()
+            if (deadline.isBefore(now.plusSeconds(60)) || deadline.isAfter(now.plus(Duration.ofDays(30)))) return null
+            deadline
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        }
+    }
+}
+
 @Singleton
 class CompanionKitModelInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -1230,6 +1348,12 @@ abstract class ParserBindingsModule {
 
     @Binds
     abstract fun bindTaskRescheduleAdvisor(impl: DefaultTaskRescheduleAdvisor): TaskRescheduleAdvisor
+
+    @Binds
+    abstract fun bindTaskSnoozeAdvisor(impl: DefaultTaskSnoozeAdvisor): TaskSnoozeAdvisor
+
+    @Binds
+    abstract fun bindTaskClarificationAdvisor(impl: DefaultTaskClarificationAdvisor): TaskClarificationAdvisor
 }
 
 @Module

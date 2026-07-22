@@ -105,9 +105,19 @@ fun SettingsRoute(
             Column(
                 verticalArrangement = Arrangement.spacedBy(OrkaSpacing.sm),
             ) {
-                OrkaActionButton(text = "System", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) { viewModel.toggleDarkMode(null) }
-                OrkaActionButton(text = "Dark", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) { viewModel.toggleDarkMode(true) }
-                OrkaActionButton(text = "Light", emphasis = com.orka.core.model.ActionEmphasis.SECONDARY) { viewModel.toggleDarkMode(false) }
+                val darkModeOverride = state.settings.darkModeOverride
+                OrkaActionButton(
+                    text = "System",
+                    emphasis = if (darkModeOverride == null) com.orka.core.model.ActionEmphasis.PRIMARY else com.orka.core.model.ActionEmphasis.SECONDARY,
+                ) { viewModel.toggleDarkMode(null) }
+                OrkaActionButton(
+                    text = "Dark",
+                    emphasis = if (darkModeOverride == true) com.orka.core.model.ActionEmphasis.PRIMARY else com.orka.core.model.ActionEmphasis.SECONDARY,
+                ) { viewModel.toggleDarkMode(true) }
+                OrkaActionButton(
+                    text = "Light",
+                    emphasis = if (darkModeOverride == false) com.orka.core.model.ActionEmphasis.PRIMARY else com.orka.core.model.ActionEmphasis.SECONDARY,
+                ) { viewModel.toggleDarkMode(false) }
             }
 
             Text("On-device model", style = MaterialTheme.typography.headlineMedium)

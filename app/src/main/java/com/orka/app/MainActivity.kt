@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
@@ -47,6 +48,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.orka.core.designsystem.OrkaTheme
+import java.time.Instant
 import com.orka.core.model.ArchiveRoute
 import com.orka.core.model.CaptureRoute
 import com.orka.core.model.DiagnosticsRoute
@@ -88,14 +90,21 @@ class MainActivity : ComponentActivity() {
 
 @AndroidEntryPoint
 class AlarmActivity : ComponentActivity() {
+    // android:launchMode="singleTop" means a second alarm firing while this one is still on
+    // screen reuses this same instance via onNewIntent rather than creating a new Activity —
+    // without tracking that in observable state, the UI would keep showing the first alarm's
+    // task even after the user taps the second alarm's notification.
+    private val reminderIdState = mutableStateOf("")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         enableEdgeToEdge()
-        val reminderId = intent.getStringExtra("reminder_id").orEmpty()
+        reminderIdState.value = intent.getStringExtra("reminder_id").orEmpty()
         setContent {
             OrkaTheme {
+                val reminderId by reminderIdState
                 AlarmRoute(
                     reminderId = reminderId,
                     onComplete = {
@@ -112,6 +121,12 @@ class AlarmActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        reminderIdState.value = intent.getStringExtra("reminder_id").orEmpty()
     }
 }
 
@@ -139,7 +154,7 @@ class RootViewModel @Inject constructor(
         viewModelScope.launch {
             // AlarmRefreshWorker also does this every 6h, but that leaves a stale window right
             // after each app open/reinstall — cheap enough to just re-check on every launch too.
-            taskRepository.markOverdueTasks(java.time.Instant.now())
+            taskRepository.markOverdueTasks(Instant.now())
         }
     }
 

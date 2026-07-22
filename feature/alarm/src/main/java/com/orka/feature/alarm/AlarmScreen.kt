@@ -29,6 +29,7 @@ import com.orka.core.model.InteractionType
 import com.orka.core.model.Task
 import com.orka.core.model.TaskRepository
 import com.orka.core.model.TaskRescheduleAdvisor
+import com.orka.core.model.TaskSnoozeAdvisor
 import com.orka.core.model.TaskSplitter
 import com.orka.core.model.TaskStatus
 import com.orka.data.scheduler.SchedulerOrchestrator
@@ -42,6 +43,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+private val DEFAULT_SNOOZE_DURATIONS = mapOf(
+    InteractionType.SNOOZE_SHORT to Duration.ofMinutes(30),
+    InteractionType.SNOOZE_LONG to Duration.ofHours(3),
+)
+
 data class AlarmUiState(
     val task: Task? = null,
     val reminderId: String? = null,
@@ -49,6 +55,7 @@ data class AlarmUiState(
     val actions: List<AlarmActionOption> = emptyList(),
     val history: List<InteractionEvent> = emptyList(),
     val isProcessingSplit: Boolean = false,
+    val snoozeDurations: Map<InteractionType, Duration> = DEFAULT_SNOOZE_DURATIONS,
 )
 
 @HiltViewModel
@@ -59,6 +66,7 @@ class AlarmViewModel @Inject constructor(
     private val schedulerOrchestrator: SchedulerOrchestrator,
     private val taskSplitter: TaskSplitter,
     private val taskRescheduleAdvisor: TaskRescheduleAdvisor,
+    private val taskSnoozeAdvisor: TaskSnoozeAdvisor,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AlarmUiState())
     val uiState = _uiState.asStateFlow()
@@ -68,14 +76,52 @@ class AlarmViewModel @Inject constructor(
             val reminder = taskRepository.getReminder(reminderId) ?: return@launch
             val task = taskRepository.getTask(reminder.taskId) ?: return@launch
             val history = taskRepository.observeInteractions(task.id).first()
+            val actions = actionResolver.resolve(task, history, Instant.now())
+            // Show the full-screen interrupt immediately with fixed default durations — never
+            // delay it waiting on the model. If Gemma comes back with a better-fitting duration
+            // shortly after, refine the button label and the duration actually used, in place.
             _uiState.value = AlarmUiState(
                 task = task,
                 reminderId = reminderId,
                 reminderLabel = reminder.reminderLabel,
-                actions = actionResolver.resolve(task, history, Instant.now()),
+                actions = withSnoozeLabels(actions, DEFAULT_SNOOZE_DURATIONS),
                 history = history,
+                snoozeDurations = DEFAULT_SNOOZE_DURATIONS,
             )
+
+            actions.forEach { action ->
+                val isLongSnooze = when (action.type) {
+                    InteractionType.SNOOZE_SHORT -> false
+                    InteractionType.SNOOZE_LONG -> true
+                    else -> return@forEach
+                }
+                launch {
+                    val suggestedMinutes = runCatching {
+                        taskSnoozeAdvisor.suggestSnoozeMinutes(task, isLongSnooze)
+                    }.getOrNull() ?: return@launch
+                    // AlarmActivity is singleTop: a second alarm can call load() again with a
+                    // different reminderId while this suggestion is still in flight. Applying it
+                    // to whatever's now in state would corrupt the newer task's UI with the
+                    // wrong task's suggestion.
+                    if (_uiState.value.reminderId != reminderId) return@launch
+                    val updatedDurations = _uiState.value.snoozeDurations +
+                        (action.type to Duration.ofMinutes(suggestedMinutes.toLong()))
+                    _uiState.value = _uiState.value.copy(
+                        actions = withSnoozeLabels(_uiState.value.actions, updatedDurations),
+                        snoozeDurations = updatedDurations,
+                    )
+                }
+            }
         }
+    }
+
+    private fun withSnoozeLabels(
+        actions: List<AlarmActionOption>,
+        durations: Map<InteractionType, Duration>,
+    ): List<AlarmActionOption> = actions.map { action ->
+        durations[action.type]?.let { duration ->
+            action.copy(label = "Snooze ${TimeFormatter.humanizeDuration(duration)}")
+        } ?: action
     }
 
     fun handleAction(type: InteractionType, onComplete: () -> Unit) {
@@ -121,8 +167,14 @@ class AlarmViewModel @Inject constructor(
                     schedulerOrchestrator.persistSchedule(updated.id, reminders)
                 }
 
-                InteractionType.SNOOZE_SHORT -> scheduleSnooze(task, Duration.ofMinutes(30))
-                InteractionType.SNOOZE_LONG -> scheduleSnooze(task, Duration.ofHours(3))
+                InteractionType.SNOOZE_SHORT -> scheduleSnooze(
+                    task,
+                    _uiState.value.snoozeDurations[InteractionType.SNOOZE_SHORT] ?: Duration.ofMinutes(30),
+                )
+                InteractionType.SNOOZE_LONG -> scheduleSnooze(
+                    task,
+                    _uiState.value.snoozeDurations[InteractionType.SNOOZE_LONG] ?: Duration.ofHours(3),
+                )
                 InteractionType.SNOOZE_CUSTOM -> scheduleSnooze(task, Duration.ofHours(6))
                 InteractionType.SPLIT_TASK -> {
                     _uiState.value = _uiState.value.copy(isProcessingSplit = true)
