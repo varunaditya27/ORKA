@@ -394,6 +394,16 @@ interface ModelInstaller {
     suspend fun installBundledModelIfAvailable(): ModelInstallState
     suspend fun installFromCompanionKit(sourcePath: String, expectedChecksum: String? = null): ModelInstallState
     suspend fun reset()
+
+    /**
+     * Loads the model into memory ahead of time (paying the multi-gigabyte-file, potentially
+     * minutes-long cold-load cost once, proactively, rather than on the user's first real
+     * capture) so a subsequent parse/split/reschedule/snooze/clarification call only pays actual
+     * inference latency. Safe to call redundantly — a no-op if already warm or the model isn't
+     * ready yet. Should never throw; callers fire this from app startup and don't need to react
+     * to failure (a later real Gemma call will surface it the normal way and fall back).
+     */
+    suspend fun warmUp()
 }
 
 interface DiagnosticsRepository {

@@ -181,6 +181,12 @@ class RootViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             modelInstaller.installBundledModelIfAvailable()
+            // Loads the model into memory now, in the background, rather than paying that same
+            // cost (which real-device testing showed can run into minutes for a model this size)
+            // the first time the user actually taps Analyse. By the time they've described a task
+            // and tapped the button, this has had a head start — best case it's already warm and
+            // that tap only pays real inference latency.
+            modelInstaller.warmUp()
         }
         viewModelScope.launch {
             // AlarmRefreshWorker also does this every 6h, but that leaves a stale window right

@@ -247,6 +247,8 @@ class FakeModelInstaller(
     override suspend fun reset() {
         state.value = ModelInstallState()
     }
+
+    override suspend fun warmUp() = Unit
 }
 
 class FakeDiagnosticsRepository(

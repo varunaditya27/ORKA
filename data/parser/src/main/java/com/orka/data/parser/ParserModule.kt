@@ -72,7 +72,19 @@ private const val MODEL_MIN_VALID_SIZE_BYTES = 10 * 1024 * 1024L
 // whichever caller is waiting: worst case is Alarm's SPLIT_TASK/RESCHEDULE, where the same
 // coroutine also holds an isProcessingSplit/isHandlingAction re-entrancy flag and a BackHandler
 // that swallows back-presses until it clears — an unbounded hang would soft-lock that screen.
-private const val GEMMA_INFERENCE_TIMEOUT_MS = 20_000L
+// Real-device testing on a mid-range phone showed a single short JSON-structured generation from
+// the 4B model legitimately taking well past the previous 20s value under real load — 60s is a
+// generous ceiling for genuine inference time without being effectively unbounded.
+private const val GEMMA_INFERENCE_TIMEOUT_MS = 60_000L
+
+// Engine(...).initialize() loads the multi-gigabyte model file — real-device testing showed this
+// alone taking several minutes (page-fault-heavy, storage-speed-bound), nowhere near the "~10s"
+// this code originally assumed. This timeout is a last-resort safety net against a genuine
+// hang, not a bound on normal slow-but-progressing loads: withTimeout can only act once the
+// underlying blocking JNI call actually yields control back (it cannot forcibly abort a native
+// call that never checks for interruption), so in practice this mainly prevents the *coroutine
+// bookkeeping* from waiting forever if initialize() does eventually return control very late.
+private const val GEMMA_MODEL_LOAD_TIMEOUT_MS = 300_000L
 
 /**
  * Manually `adb push`ed once to this well-known, world-readable device path — never bundled
@@ -108,8 +120,10 @@ private object GemmaEngineHolder {
             existing?.close()
             engine = null
             loadedModelPath = null
-            val created = withContext(Dispatchers.IO) {
-                Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU())).apply { initialize() }
+            val created = withTimeout(GEMMA_MODEL_LOAD_TIMEOUT_MS) {
+                withContext(Dispatchers.IO) {
+                    Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU())).apply { initialize() }
+                }
             }
             engine = created
             loadedModelPath = modelPath
@@ -1338,6 +1352,13 @@ class CompanionKitModelInstaller @Inject constructor(
         GemmaEngineHolder.reset()
         installedModelFile().delete()
         state.value = ModelInstallState()
+    }
+
+    override suspend fun warmUp() {
+        val modelFile = resolveReadyModelFile(installBundledModelIfAvailable()) ?: return
+        runCatching {
+            GemmaEngineHolder.use(modelFile.absolutePath) { /* engine creation itself is the point */ }
+        }
     }
 
     private fun installedModelFile(): File = File(modelDirectory, MODEL_FILE_NAME)
