@@ -96,12 +96,23 @@ private const val DEVICE_PUSHED_MODEL_DIR = "/data/local/tmp"
 
 // A CPU-only EngineConfig with no maxNumTokens/cacheDir set (ORKA's original configuration) left
 // real device-measured cold loads and inference well past a minute on a mid-range phone. A known
-// reference app using the same litertlm API — but with GPU backend, a bounded 1024-token context,
-// and an explicit cacheDir — responds in ~10s on comparable hardware. GPU delegate support isn't
-// universal across devices/GPU drivers, so this tries GPU first and falls back to CPU (with an
-// explicit thread count — the previous `Backend.CPU()` call left numOfThreads null/unspecified)
-// if GPU engine creation fails for any reason.
-private const val GEMMA_MAX_NUM_TOKENS = 1024
+// reference app using the same litertlm API responds in ~10s on comparable hardware with GPU
+// backend and an explicit cacheDir — adopted below via an NPU -> GPU -> CPU cascade (neither NPU
+// nor GPU delegate support is universal across devices/vendors/drivers, so each tier is tried in
+// turn, CPU falling back to an explicit thread count too since the previous `Backend.CPU()` call
+// left numOfThreads unspecified).
+//
+// maxNumTokens is the engine's *total* context budget (prompt + generated output combined, not
+// just output) — that reference app's own system prompt is a single ~330-token paragraph, so its
+// 1024-token budget was never actually tight for its use case. ORKA's parse() system prompt is a
+// different order of magnitude: it embeds three full worked JSON examples as few-shot guidance
+// and measures out at ~1700-2100 tokens by itself (measured directly from the source, not
+// estimated blind), before the user's input or the model's own JSON output are even counted.
+// Copying that reference value verbatim would have left negative room for a response on nearly
+// every real call. 4096 comfortably covers the largest prompt plus a generous output budget
+// (even the two-object DERIVED_TASK_EVENT array) with real margin, not just enough to not
+// immediately break.
+private const val GEMMA_MAX_NUM_TOKENS = 8192
 
 /**
  * Holds a single warm [Engine] for the lifetime of the process. Engine.initialize() can take
@@ -122,7 +133,7 @@ private object GemmaEngineHolder {
     // exception something here could catch — undefined behavior up to and including a crash.
     // Serializing every Gemma call through one critical section also matches reality: a single
     // on-device Engine instance has no real concurrent-inference support to lose by doing this.
-    suspend fun <T> use(modelPath: String, cacheDir: String, block: suspend (Engine) -> T): T = mutex.withLock {
+    suspend fun <T> use(modelPath: String, context: Context, block: suspend (Engine) -> T): T = mutex.withLock {
         val existing = engine
         val activeEngine = if (existing != null && loadedModelPath == modelPath) {
             existing
@@ -132,7 +143,7 @@ private object GemmaEngineHolder {
             loadedModelPath = null
             val created = withTimeout(GEMMA_MODEL_LOAD_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
-                    createEngine(modelPath, cacheDir)
+                    createEngine(modelPath, context)
                 }
             }
             engine = created
@@ -148,28 +159,44 @@ private object GemmaEngineHolder {
         loadedModelPath = null
     }
 
-    // GPU delegate support isn't guaranteed on every device/driver combination — falls back to
-    // CPU (with an explicit thread count matching this device's actual core count, rather than
-    // leaving it null/unspecified) if GPU engine creation throws for any reason.
-    private fun createEngine(modelPath: String, cacheDir: String): Engine {
-        return runCatching {
-            Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = Backend.GPU(),
-                    maxNumTokens = GEMMA_MAX_NUM_TOKENS,
-                    cacheDir = cacheDir,
-                ),
-            ).apply { initialize() }
-        }.getOrElse {
-            Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = Backend.CPU(Runtime.getRuntime().availableProcessors()),
-                    maxNumTokens = GEMMA_MAX_NUM_TOKENS,
-                    cacheDir = cacheDir,
-                ),
-            ).apply { initialize() }
+    // Neither NPU nor GPU delegate support is guaranteed on every device/vendor/driver
+    // combination — cascades NPU -> GPU -> CPU, using whichever tier actually succeeds. CPU is
+    // the guaranteed-available last resort, with an explicit thread count matching this device's
+    // real core count rather than leaving it null/unspecified.
+    private fun createEngine(modelPath: String, context: Context): Engine {
+        val cacheDir = context.cacheDir.absolutePath
+
+        fun engineConfig(backend: Backend) = EngineConfig(
+            modelPath = modelPath,
+            backend = backend,
+            maxNumTokens = GEMMA_MAX_NUM_TOKENS,
+            cacheDir = cacheDir,
+        )
+
+        val npuLibraryDir = runCatching { context.applicationInfo.nativeLibraryDir }.getOrNull()
+        val npu = npuLibraryDir?.let { tryCreateEngine(engineConfig(Backend.NPU(it))) }
+        if (npu != null) return npu
+
+        val gpu = tryCreateEngine(engineConfig(Backend.GPU()))
+        if (gpu != null) return gpu
+
+        return Engine(
+            engineConfig(Backend.CPU(Runtime.getRuntime().availableProcessors())),
+        ).apply { initialize() }
+    }
+
+    // A failed initialize() still leaves a constructed Engine holding whatever native resources
+    // it managed to allocate before throwing — closing it here (rather than just discarding the
+    // reference via the exception unwinding) avoids leaking that partial native state before the
+    // next backend tier is attempted.
+    private fun tryCreateEngine(config: EngineConfig): Engine? {
+        val engine = runCatching { Engine(config) }.getOrNull() ?: return null
+        return try {
+            engine.initialize()
+            engine
+        } catch (e: Throwable) {
+            runCatching { engine.close() }
+            null
         }
     }
 }
@@ -429,7 +456,7 @@ class DefaultTaskParser @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, this@DefaultTaskParser.context) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1047,7 +1074,7 @@ class DefaultTaskSplitter @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1136,7 +1163,7 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1219,7 +1246,7 @@ class DefaultTaskSnoozeAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1275,7 +1302,7 @@ class DefaultTaskClarificationAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1431,7 +1458,7 @@ class CompanionKitModelInstaller @Inject constructor(
     override suspend fun warmUp() {
         val modelFile = resolveReadyModelFile(installBundledModelIfAvailable()) ?: return
         runCatching {
-            GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { /* engine creation itself is the point */ }
+            GemmaEngineHolder.use(modelFile.absolutePath, context) { /* engine creation itself is the point */ }
         }
     }
 
