@@ -13,6 +13,7 @@ app/debug/
 branding/generated/
 model-kit/
 *.litertlm
+model_config.yaml
 .gradle-user-home/
 .tools/
 .kotlin/

@@ -64,6 +64,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 private const val MODEL_FILE_NAME = "gemma-4-E4B-it.litertlm"
+private const val MODEL_CONFIG_FILE_NAME = "orka_model_config.txt"
 private const val MODEL_MIN_VALID_SIZE_BYTES = 10 * 1024 * 1024L
 
 // Every Gemma call site already falls back to a deterministic default on malformed output or a
@@ -93,6 +94,15 @@ private const val GEMMA_MODEL_LOAD_TIMEOUT_MS = 300_000L
  */
 private const val DEVICE_PUSHED_MODEL_DIR = "/data/local/tmp"
 
+// A CPU-only EngineConfig with no maxNumTokens/cacheDir set (ORKA's original configuration) left
+// real device-measured cold loads and inference well past a minute on a mid-range phone. A known
+// reference app using the same litertlm API — but with GPU backend, a bounded 1024-token context,
+// and an explicit cacheDir — responds in ~10s on comparable hardware. GPU delegate support isn't
+// universal across devices/GPU drivers, so this tries GPU first and falls back to CPU (with an
+// explicit thread count — the previous `Backend.CPU()` call left numOfThreads null/unspecified)
+// if GPU engine creation fails for any reason.
+private const val GEMMA_MAX_NUM_TOKENS = 1024
+
 /**
  * Holds a single warm [Engine] for the lifetime of the process. Engine.initialize() can take
  * up to ~10s, so re-creating it per parse (or per ViewModel instance) would make every capture
@@ -112,7 +122,7 @@ private object GemmaEngineHolder {
     // exception something here could catch — undefined behavior up to and including a crash.
     // Serializing every Gemma call through one critical section also matches reality: a single
     // on-device Engine instance has no real concurrent-inference support to lose by doing this.
-    suspend fun <T> use(modelPath: String, block: suspend (Engine) -> T): T = mutex.withLock {
+    suspend fun <T> use(modelPath: String, cacheDir: String, block: suspend (Engine) -> T): T = mutex.withLock {
         val existing = engine
         val activeEngine = if (existing != null && loadedModelPath == modelPath) {
             existing
@@ -122,7 +132,7 @@ private object GemmaEngineHolder {
             loadedModelPath = null
             val created = withTimeout(GEMMA_MODEL_LOAD_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
-                    Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU())).apply { initialize() }
+                    createEngine(modelPath, cacheDir)
                 }
             }
             engine = created
@@ -136,6 +146,31 @@ private object GemmaEngineHolder {
         engine?.close()
         engine = null
         loadedModelPath = null
+    }
+
+    // GPU delegate support isn't guaranteed on every device/driver combination — falls back to
+    // CPU (with an explicit thread count matching this device's actual core count, rather than
+    // leaving it null/unspecified) if GPU engine creation throws for any reason.
+    private fun createEngine(modelPath: String, cacheDir: String): Engine {
+        return runCatching {
+            Engine(
+                EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.GPU(),
+                    maxNumTokens = GEMMA_MAX_NUM_TOKENS,
+                    cacheDir = cacheDir,
+                ),
+            ).apply { initialize() }
+        }.getOrElse {
+            Engine(
+                EngineConfig(
+                    modelPath = modelPath,
+                    backend = Backend.CPU(Runtime.getRuntime().availableProcessors()),
+                    maxNumTokens = GEMMA_MAX_NUM_TOKENS,
+                    cacheDir = cacheDir,
+                ),
+            ).apply { initialize() }
+        }
     }
 }
 
@@ -394,7 +429,7 @@ class DefaultTaskParser @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -982,6 +1017,7 @@ private data class LlmTaskSplit(
  * like [DefaultTaskParser] falls back to regex parsing.
  */
 class DefaultTaskSplitter @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val modelInstaller: ModelInstaller,
 ) : TaskSplitter {
     override suspend fun suggestSplit(task: Task): TaskSplitSuggestion? {
@@ -1011,7 +1047,7 @@ class DefaultTaskSplitter @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1064,6 +1100,7 @@ private data class LlmReschedule(
  * doesn't parse, or lands somewhere implausible (in the past, or absurdly far out).
  */
 class DefaultTaskRescheduleAdvisor @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val modelInstaller: ModelInstaller,
 ) : TaskRescheduleAdvisor {
     override suspend fun suggestReschedule(task: Task, profile: BehaviorProfile): RescheduleSuggestion? {
@@ -1099,7 +1136,7 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1151,6 +1188,7 @@ private const val LONG_SNOOZE_MAX_MINUTES = 360
  * caller's fixed default whenever the model isn't ready or its answer falls outside those bounds.
  */
 class DefaultTaskSnoozeAdvisor @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val modelInstaller: ModelInstaller,
 ) : TaskSnoozeAdvisor {
     override suspend fun suggestSnoozeMinutes(task: Task, isLongSnooze: Boolean): Int? {
@@ -1181,7 +1219,7 @@ class DefaultTaskSnoozeAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1210,6 +1248,7 @@ private data class LlmClarificationDeadline(val deadline: String)
  * deterministic choice available regardless of whether this succeeds.
  */
 class DefaultTaskClarificationAdvisor @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val modelInstaller: ModelInstaller,
 ) : TaskClarificationAdvisor {
     override suspend fun suggestDeadline(draft: TaskDraft): Instant? {
@@ -1236,7 +1275,7 @@ class DefaultTaskClarificationAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+            val response = GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { engine ->
                 engine.createConversation().use { conversation ->
                     withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
                         withContext(Dispatchers.Default) {
@@ -1276,14 +1315,26 @@ class CompanionKitModelInstaller @Inject constructor(
 
     /**
      * Detects a model made available on the device without repackaging it into the APK:
-     * either a one-time `adb push <model> $DEVICE_PUSHED_MODEL_PATH`, or a prior
-     * [installFromCompanionKit] copy already sitting in app-private storage. The pushed file
-     * is used in place directly (no copy) since it's already 3+ GB — duplicating it into app
-     * storage would waste that much disk again for no benefit.
+     * highest priority goes to whatever [MODEL_CONFIG_FILE_NAME] points at (for switching
+     * between different pushed `.litertlm` files — e.g. to A/B test model size/quality/latency
+     * on-device — without a rebuild), then a one-time `adb push <model> $DEVICE_PUSHED_MODEL_PATH`,
+     * then a prior [installFromCompanionKit] copy already sitting in app-private storage. The
+     * pushed file is used in place directly (no copy) since it's already gigabytes in size —
+     * duplicating it into app storage would waste that much disk again for no benefit.
      */
     override suspend fun installBundledModelIfAvailable(): ModelInstallState {
         return withContext(Dispatchers.IO) {
             installMutex.withLock {
+                val configured = resolveConfiguredModelFile()
+                if (configured != null) {
+                    return@withLock ModelInstallState(
+                        availability = ModelAvailability.READY,
+                        modelPath = configured.absolutePath,
+                        sizeBytes = configured.length(),
+                        message = "Model selected via $MODEL_CONFIG_FILE_NAME: ${configured.name}.",
+                    ).also { state.value = it }
+                }
+
                 val importedCopy = installedModelFile()
                 if (importedCopy.exists() && importedCopy.length() > MODEL_MIN_VALID_SIZE_BYTES) {
                     return@withLock ModelInstallState(
@@ -1310,6 +1361,29 @@ class CompanionKitModelInstaller @Inject constructor(
                 ).also { state.value = it }
             }
         }
+    }
+
+    /**
+     * Reads `$DEVICE_PUSHED_MODEL_DIR/$MODEL_CONFIG_FILE_NAME` if present — a plain text file
+     * containing either a bare filename (resolved inside $DEVICE_PUSHED_MODEL_DIR) or an
+     * absolute path, naming whichever pushed `.litertlm` file should actually be used. Lets you
+     * push several candidate models side by side and switch between them with just:
+     *   adb push some-other-model.litertlm /data/local/tmp/
+     *   adb shell "echo some-other-model.litertlm > /data/local/tmp/$MODEL_CONFIG_FILE_NAME"
+     * without reinstalling the app. Absent, blank, or pointing at a missing/too-small file all
+     * fall through silently to the normal default-filename detection below.
+     */
+    private fun resolveConfiguredModelFile(): File? {
+        val configFile = File(DEVICE_PUSHED_MODEL_DIR, MODEL_CONFIG_FILE_NAME)
+        if (!configFile.exists()) return null
+        val configuredName = runCatching { configFile.readText().trim() }.getOrNull()
+        if (configuredName.isNullOrBlank()) return null
+        val candidate = if (configuredName.startsWith("/")) {
+            File(configuredName)
+        } else {
+            File(DEVICE_PUSHED_MODEL_DIR, configuredName)
+        }
+        return candidate.takeIf { it.exists() && it.length() > MODEL_MIN_VALID_SIZE_BYTES }
     }
 
     override suspend fun installFromCompanionKit(
@@ -1357,7 +1431,7 @@ class CompanionKitModelInstaller @Inject constructor(
     override suspend fun warmUp() {
         val modelFile = resolveReadyModelFile(installBundledModelIfAvailable()) ?: return
         runCatching {
-            GemmaEngineHolder.use(modelFile.absolutePath) { /* engine creation itself is the point */ }
+            GemmaEngineHolder.use(modelFile.absolutePath, context.cacheDir.absolutePath) { /* engine creation itself is the point */ }
         }
     }
 

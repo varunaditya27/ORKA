@@ -1,0 +1,8 @@
+# Copy this file to model_config.yaml (which is gitignored — it's local machine config, not
+# meant to be committed) and point model_path at whichever .litertlm file on THIS PC you want
+# ORKA to use next. Then run: ./scripts/push_model.sh
+#
+# Switching models is just: edit model_path below, re-run the script. No app rebuild, no
+# on-device editing required.
+
+model_path: /home/varunaditya/models/gemma-4-E4B-it.litertlm
