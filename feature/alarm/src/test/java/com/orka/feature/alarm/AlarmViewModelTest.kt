@@ -69,6 +69,43 @@ class AlarmViewModelTest {
     }
 
     @Test
+    fun handleActionIgnoresReentrantCallWhileFirstCallIsStillInFlight() = runTest(mainDispatcherRule.dispatcher) {
+        val task = TestFixtures.task(id = "task-alarm-reentrant", deadline = TestFixtures.now.plus(Duration.ofHours(10)))
+        val reminder = TestFixtures.reminder(id = "reminder-alarm-reentrant", taskId = task.id)
+        val taskRepository = FakeTaskRepository(tasks = listOf(task), reminders = listOf(reminder))
+        val viewModel = AlarmViewModel(
+            taskRepository = taskRepository,
+            behaviorProfileRepository = FakeBehaviorProfileRepository(),
+            actionResolver = DefaultAlarmActionResolver(),
+            taskSplitter = FakeTaskSplitter(),
+            taskRescheduleAdvisor = FakeTaskRescheduleAdvisor(),
+            taskSnoozeAdvisor = FakeTaskSnoozeAdvisor(),
+            schedulerOrchestrator = SchedulerOrchestrator(
+                ruleBased = RuleBasedSchedulerPolicy(),
+                adaptive = AdaptiveSchedulerPolicy(),
+                preEvent = PreEventSchedulerPolicy(),
+                alarmRegistrar = FakeAlarmRegistrar(),
+                taskRepository = taskRepository,
+                settingsRepository = FakeSettingsRepository(),
+                rlTrainer = FakeRlTrainer(),
+            ),
+        )
+
+        viewModel.load(reminder.id)
+        advanceUntilIdle()
+
+        // Simulates a rapid double-tap (or tapping a second action button) before the first
+        // handleAction() call's onComplete() has had a chance to navigate away.
+        var completions = 0
+        viewModel.handleAction(InteractionType.MARK_DONE) { completions++ }
+        viewModel.handleAction(InteractionType.DISMISS_TASK) { completions++ }
+        advanceUntilIdle()
+
+        assertThat(completions).isEqualTo(1)
+        assertThat(taskRepository.observeInteractions(task.id).first().map { it.type }).containsExactly(InteractionType.MARK_DONE)
+    }
+
+    @Test
     fun splitTaskRetiresOriginalAndCreatesTwoLinkedFollowUps() = runTest(mainDispatcherRule.dispatcher) {
         val task = TestFixtures.task(
             id = "task-split",

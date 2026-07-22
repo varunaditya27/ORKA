@@ -54,6 +54,7 @@ data class TaskDetailUiState(
     val interactions: List<InteractionEvent> = emptyList(),
     val reminders: List<com.orka.core.model.ReminderEvent> = emptyList(),
     val rescheduleMessage: String? = null,
+    val isProcessingAction: Boolean = false,
 )
 
 @HiltViewModel
@@ -65,6 +66,7 @@ class TaskDetailViewModel @Inject constructor(
 ) : ViewModel() {
     private val taskId = MutableStateFlow<String?>(null)
     private val rescheduleMessage = MutableStateFlow<String?>(null)
+    private val isProcessingAction = MutableStateFlow(false)
 
     val uiState = taskId.filterNotNull().flatMapLatest { id ->
         combine(
@@ -72,8 +74,15 @@ class TaskDetailViewModel @Inject constructor(
             taskRepository.observeInteractions(id),
             taskRepository.observeReminders(id),
             rescheduleMessage,
-        ) { task, interactions, reminders, message ->
-            TaskDetailUiState(task = task, interactions = interactions, reminders = reminders, rescheduleMessage = message)
+            isProcessingAction,
+        ) { task, interactions, reminders, message, isProcessing ->
+            TaskDetailUiState(
+                task = task,
+                interactions = interactions,
+                reminders = reminders,
+                rescheduleMessage = message,
+                isProcessingAction = isProcessing,
+            )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskDetailUiState())
 
@@ -83,60 +92,88 @@ class TaskDetailViewModel @Inject constructor(
 
     fun markDone() {
         val task = uiState.value.task ?: return
+        // Without this, a rapid double-tap could re-enter while the first call's coroutine is
+        // still mid-flight, recording a duplicate MARK_DONE interaction and double-feeding the
+        // behavior profile learner for a single actual tap — mirrors the guard already applied
+        // to Capture's confirmDraft() and Alarm's splitTask().
+        if (isProcessingAction.value) return
+        isProcessingAction.value = true
         viewModelScope.launch {
-            taskRepository.updateTaskStatus(task.id, TaskStatus.COMPLETED, Instant.now())
-            schedulerOrchestrator.persistSchedule(task.id, emptyList())
-            val event = InteractionEvent(taskId = task.id, type = InteractionType.MARK_DONE)
-            taskRepository.recordInteraction(event)
-            behaviorProfileRepository.updateFromInteraction(task, event)
+            try {
+                taskRepository.updateTaskStatus(task.id, TaskStatus.COMPLETED, Instant.now())
+                schedulerOrchestrator.persistSchedule(task.id, emptyList())
+                val event = InteractionEvent(taskId = task.id, type = InteractionType.MARK_DONE)
+                taskRepository.recordInteraction(event)
+                behaviorProfileRepository.updateFromInteraction(task, event)
+            } finally {
+                isProcessingAction.value = false
+            }
         }
     }
 
     fun reschedule() {
         val task = uiState.value.task ?: return
+        if (isProcessingAction.value) return
+        isProcessingAction.value = true
         viewModelScope.launch {
-            rescheduleMessage.value = null
-            val profile = behaviorProfileRepository.getProfile()
-            // Prefer a deadline that respects the user's actual productive hours over blindly
-            // repeating the same time-of-day that was already missed once.
-            val suggestion = runCatching { taskRescheduleAdvisor.suggestReschedule(task, profile) }.getOrNull()
-            val newDeadline = suggestion?.newDeadline ?: task.deadline.plus(Duration.ofDays(1))
-            // Keep eventStartTime in sync with whatever delta was actually applied, rather than
-            // assuming it's always exactly one day.
-            val appliedDelta = Duration.between(task.deadline, newDeadline)
-            val updatedTask = task.copy(
-                deadline = newDeadline,
-                eventStartTime = task.eventStartTime?.plus(appliedDelta),
-                updatedAt = Instant.now(),
-                status = TaskStatus.PENDING,
-                // Must be recomputed — it drives the Tasks list sort order
-                // (`ORDER BY urgencyScore DESC`), and pushing the deadline out without updating
-                // it would leave the task sorted by its old, now-stale urgency.
-                urgencyScore = UrgencyCalculator.urgencyScore(newDeadline, Instant.now(), task.estimatedEffortMinutes),
-            )
-            taskRepository.upsertTask(updatedTask)
-            val (_, reminders) = schedulerOrchestrator.schedule(
-                updatedTask,
-                com.orka.core.model.SchedulingContext(
-                    profile = profile,
-                    interactionHistory = uiState.value.interactions,
-                ),
-            )
-            schedulerOrchestrator.persistSchedule(updatedTask.id, reminders)
-            rescheduleMessage.value = suggestion?.let {
-                "Rescheduled to ${TimeFormatter.formatInstant(newDeadline)} — ${it.reason}"
+            try {
+                rescheduleMessage.value = null
+                val profile = behaviorProfileRepository.getProfile()
+                // Prefer a deadline that respects the user's actual productive hours over blindly
+                // repeating the same time-of-day that was already missed once.
+                val suggestion = runCatching { taskRescheduleAdvisor.suggestReschedule(task, profile) }.getOrNull()
+                val newDeadline = suggestion?.newDeadline ?: task.deadline.plus(Duration.ofDays(1))
+                // Keep eventStartTime in sync with whatever delta was actually applied, rather than
+                // assuming it's always exactly one day.
+                val appliedDelta = Duration.between(task.deadline, newDeadline)
+                val updatedTask = task.copy(
+                    deadline = newDeadline,
+                    eventStartTime = task.eventStartTime?.plus(appliedDelta),
+                    updatedAt = Instant.now(),
+                    status = TaskStatus.PENDING,
+                    // Must be recomputed — it drives the Tasks list sort order
+                    // (`ORDER BY urgencyScore DESC`), and pushing the deadline out without updating
+                    // it would leave the task sorted by its old, now-stale urgency.
+                    urgencyScore = UrgencyCalculator.urgencyScore(newDeadline, Instant.now(), task.estimatedEffortMinutes),
+                )
+                taskRepository.upsertTask(updatedTask)
+                val (_, reminders) = schedulerOrchestrator.schedule(
+                    updatedTask,
+                    com.orka.core.model.SchedulingContext(
+                        profile = profile,
+                        interactionHistory = uiState.value.interactions,
+                    ),
+                )
+                schedulerOrchestrator.persistSchedule(updatedTask.id, reminders)
+                // Without this, a reschedule initiated from TaskDetail (unlike the same action on
+                // the Alarm screen) would never show up in this task's Activity timeline and would
+                // never feed the behavior profile / RL trainer.
+                val event = InteractionEvent(taskId = updatedTask.id, type = InteractionType.RESCHEDULE)
+                taskRepository.recordInteraction(event)
+                behaviorProfileRepository.updateFromInteraction(updatedTask, event)
+                rescheduleMessage.value = suggestion?.let {
+                    "Rescheduled to ${TimeFormatter.formatInstant(newDeadline)} — ${it.reason}"
+                }
+            } finally {
+                isProcessingAction.value = false
             }
         }
     }
 
     fun dismissTask() {
         val task = uiState.value.task ?: return
+        if (isProcessingAction.value) return
+        isProcessingAction.value = true
         viewModelScope.launch {
-            taskRepository.updateTaskStatus(task.id, TaskStatus.DISMISSED, Instant.now())
-            schedulerOrchestrator.persistSchedule(task.id, emptyList())
-            val event = InteractionEvent(taskId = task.id, type = InteractionType.DISMISS_TASK)
-            taskRepository.recordInteraction(event)
-            behaviorProfileRepository.updateFromInteraction(task, event)
+            try {
+                taskRepository.updateTaskStatus(task.id, TaskStatus.DISMISSED, Instant.now())
+                schedulerOrchestrator.persistSchedule(task.id, emptyList())
+                val event = InteractionEvent(taskId = task.id, type = InteractionType.DISMISS_TASK)
+                taskRepository.recordInteraction(event)
+                behaviorProfileRepository.updateFromInteraction(task, event)
+            } finally {
+                isProcessingAction.value = false
+            }
         }
     }
 }
@@ -190,16 +227,19 @@ fun TaskDetailRoute(
                                 OrkaActionButton(
                                     text = "Mark Done",
                                     emphasis = com.orka.core.model.ActionEmphasis.PRIMARY,
+                                    enabled = !state.isProcessingAction,
                                     onClick = viewModel::markDone,
                                 )
                                 OrkaActionButton(
                                     text = "Reschedule",
                                     emphasis = com.orka.core.model.ActionEmphasis.SECONDARY,
+                                    enabled = !state.isProcessingAction,
                                     onClick = viewModel::reschedule,
                                 )
                                 OrkaActionButton(
                                     text = "Dismiss task",
                                     emphasis = com.orka.core.model.ActionEmphasis.TERTIARY,
+                                    enabled = !state.isProcessingAction,
                                     onClick = viewModel::dismissTask,
                                 )
                             }

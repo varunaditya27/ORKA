@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <!-- The model file is meant to be re-detected from its adb-pushed device path, not backed
+         up (it's 3+ GB and would make backups absurdly large/slow). The task database itself
+         is deliberately NOT excluded — a personal task manager that throws away every task,
+         reminder, and interaction history on backup/restore or device migration would defeat
+         its own purpose. Reminders past their fire time are safely pruned and future ones
+         re-armed by AlarmRefreshWorker/OrkaBootReceiver regardless of restore timing. -->
     <exclude domain="file" path="model/" />
-    <exclude domain="database" path="orka.db" />
 </full-backup-content>

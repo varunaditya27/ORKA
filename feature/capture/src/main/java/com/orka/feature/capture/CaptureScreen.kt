@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -102,11 +103,13 @@ class CaptureViewModel @Inject constructor(
     private val behaviorProfileRepository: BehaviorProfileRepository,
     private val schedulerOrchestrator: SchedulerOrchestrator,
     private val taskClarificationAdvisor: TaskClarificationAdvisor,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(CaptureUiState())
+    private val _uiState = MutableStateFlow(CaptureUiState(input = savedStateHandle[KEY_INPUT] ?: ""))
     val uiState = _uiState.asStateFlow()
 
     fun updateInput(input: String) {
+        savedStateHandle[KEY_INPUT] = input
         _uiState.value = _uiState.value.copy(
             input = input,
             draft = null,
@@ -315,6 +318,7 @@ class CaptureViewModel @Inject constructor(
                 schedulerOrchestrator.persistSchedule(savedTask.id, filteredReminders)
             }
 
+            savedStateHandle[KEY_INPUT] = ""
             _uiState.value = CaptureUiState(
                 createdTaskId = createdTasks.firstOrNull()?.id,
                 infoMessage = when {
@@ -343,6 +347,10 @@ class CaptureViewModel @Inject constructor(
                 ).second
             }.getOrElse { emptyList() }
         }
+    }
+
+    private companion object {
+        const val KEY_INPUT = "capture_input"
     }
 }
 

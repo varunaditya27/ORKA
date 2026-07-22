@@ -57,6 +57,7 @@ data class AlarmUiState(
     val actions: List<AlarmActionOption> = emptyList(),
     val history: List<InteractionEvent> = emptyList(),
     val isProcessingSplit: Boolean = false,
+    val isHandlingAction: Boolean = false,
     val snoozeDurations: Map<InteractionType, Duration> = DEFAULT_SNOOZE_DURATIONS,
 )
 
@@ -128,7 +129,15 @@ class AlarmViewModel @Inject constructor(
 
     fun handleAction(type: InteractionType, onComplete: () -> Unit) {
         val task = _uiState.value.task ?: return
+        // Without this, a rapid double-tap (or tapping two different action buttons before the
+        // first's onComplete()/activity-finish takes effect) could re-enter this function while
+        // the first call is still mid-flight, double-recording the interaction event and, for
+        // MARK_DONE/DISMISS_TASK/RESCHEDULE, double-applying the underlying task mutation —
+        // mirrors the guard already applied to Capture's confirmDraft() and TaskDetail's actions.
+        if (_uiState.value.isHandlingAction) return
+        _uiState.value = _uiState.value.copy(isHandlingAction = true)
         viewModelScope.launch {
+            try {
             when (type) {
                 InteractionType.START_TASK -> {
                     taskRepository.updateTaskStatus(task.id, TaskStatus.ACTIVE)
@@ -195,6 +204,9 @@ class AlarmViewModel @Inject constructor(
             taskRepository.recordInteraction(event)
             behaviorProfileRepository.updateFromInteraction(task, event)
             onComplete()
+            } finally {
+                _uiState.value = _uiState.value.copy(isHandlingAction = false)
+            }
         }
     }
 
@@ -362,6 +374,7 @@ fun AlarmRoute(
                         OrkaActionButton(
                             text = action.label,
                             emphasis = action.emphasis,
+                            enabled = !state.isHandlingAction,
                             onClick = { viewModel.handleAction(action.type, onComplete) },
                         )
                     }

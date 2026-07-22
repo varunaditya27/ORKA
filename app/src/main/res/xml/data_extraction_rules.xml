@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
+    <!-- The model file is excluded (re-detected from its adb-pushed device path instead — see
+         backup_rules.xml). The task database is deliberately NOT excluded from either cloud
+         backup or device transfer: a personal task manager that loses all tasks/reminders/
+         history on restore or phone migration would defeat its own purpose. -->
     <cloud-backup>
         <exclude domain="file" path="model/" />
-        <exclude domain="database" path="orka.db" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="model/" />
