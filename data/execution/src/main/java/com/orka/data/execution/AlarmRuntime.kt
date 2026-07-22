@@ -37,7 +37,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
 
-private const val ORKA_ALARM_CHANNEL_ID = "orka_alarm"
+internal const val ORKA_ALARM_CHANNEL_ID = "orka_alarm"
 private const val ORKA_ALARM_ACTION = "com.orka.app.ALARM_TRIGGERED"
 private const val ORKA_OPEN_APP_ACTION = "com.orka.app.action.OPEN_APP"
 private const val ORKA_SHOW_ALARM_ACTION = "com.orka.app.action.SHOW_ALARM"

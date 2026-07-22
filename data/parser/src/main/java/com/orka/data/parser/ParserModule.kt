@@ -91,20 +91,31 @@ private object GemmaEngineHolder {
     private var engine: Engine? = null
     private var loadedModelPath: String? = null
 
-    suspend fun getOrCreate(modelPath: String): Engine = mutex.withLock {
+    // Holds the mutex for the *entire* call, not just engine creation — getOrCreate() used to
+    // release the lock as soon as it returned an Engine reference, leaving a real window where
+    // reset() (reachable from Settings' "Reset Model" button, or a model reinstall) could close
+    // that same Engine out from under another coroutine mid-inference (conversation.sendMessage()
+    // can run for seconds, well past GEMMA_INFERENCE_TIMEOUT_MS's own grace period). A native
+    // engine being closed mid-generate is a use-after-close from the JNI side, not a Kotlin
+    // exception something here could catch — undefined behavior up to and including a crash.
+    // Serializing every Gemma call through one critical section also matches reality: a single
+    // on-device Engine instance has no real concurrent-inference support to lose by doing this.
+    suspend fun <T> use(modelPath: String, block: suspend (Engine) -> T): T = mutex.withLock {
         val existing = engine
-        if (existing != null && loadedModelPath == modelPath) return@withLock existing
-
-        existing?.close()
-        engine = null
-        loadedModelPath = null
-
-        val created = withContext(Dispatchers.IO) {
-            Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU())).apply { initialize() }
+        val activeEngine = if (existing != null && loadedModelPath == modelPath) {
+            existing
+        } else {
+            existing?.close()
+            engine = null
+            loadedModelPath = null
+            val created = withContext(Dispatchers.IO) {
+                Engine(EngineConfig(modelPath = modelPath, backend = Backend.CPU())).apply { initialize() }
+            }
+            engine = created
+            loadedModelPath = modelPath
+            created
         }
-        engine = created
-        loadedModelPath = modelPath
-        created
+        block(activeEngine)
     }
 
     suspend fun reset() = mutex.withLock {
@@ -369,11 +380,12 @@ class DefaultTaskParser @Inject constructor(
         """.trimIndent()
 
         return try {
-            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
-            val response = engine.createConversation().use { conversation ->
-                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
-                    withContext(Dispatchers.Default) {
-                        conversation.sendMessage(systemPrompt)
+            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+                engine.createConversation().use { conversation ->
+                    withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                        withContext(Dispatchers.Default) {
+                            conversation.sendMessage(systemPrompt)
+                        }
                     }
                 }
             }
@@ -985,11 +997,12 @@ class DefaultTaskSplitter @Inject constructor(
         """.trimIndent()
 
         return try {
-            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
-            val response = engine.createConversation().use { conversation ->
-                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
-                    withContext(Dispatchers.Default) {
-                        conversation.sendMessage(prompt)
+            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+                engine.createConversation().use { conversation ->
+                    withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                        withContext(Dispatchers.Default) {
+                            conversation.sendMessage(prompt)
+                        }
                     }
                 }
             }
@@ -1072,11 +1085,12 @@ class DefaultTaskRescheduleAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
-            val response = engine.createConversation().use { conversation ->
-                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
-                    withContext(Dispatchers.Default) {
-                        conversation.sendMessage(prompt)
+            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+                engine.createConversation().use { conversation ->
+                    withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                        withContext(Dispatchers.Default) {
+                            conversation.sendMessage(prompt)
+                        }
                     }
                 }
             }
@@ -1153,11 +1167,12 @@ class DefaultTaskSnoozeAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
-            val response = engine.createConversation().use { conversation ->
-                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
-                    withContext(Dispatchers.Default) {
-                        conversation.sendMessage(prompt)
+            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+                engine.createConversation().use { conversation ->
+                    withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                        withContext(Dispatchers.Default) {
+                            conversation.sendMessage(prompt)
+                        }
                     }
                 }
             }
@@ -1207,11 +1222,12 @@ class DefaultTaskClarificationAdvisor @Inject constructor(
         """.trimIndent()
 
         return try {
-            val engine = GemmaEngineHolder.getOrCreate(modelFile.absolutePath)
-            val response = engine.createConversation().use { conversation ->
-                withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
-                    withContext(Dispatchers.Default) {
-                        conversation.sendMessage(prompt)
+            val response = GemmaEngineHolder.use(modelFile.absolutePath) { engine ->
+                engine.createConversation().use { conversation ->
+                    withTimeout(GEMMA_INFERENCE_TIMEOUT_MS) {
+                        withContext(Dispatchers.Default) {
+                            conversation.sendMessage(prompt)
+                        }
                     }
                 }
             }

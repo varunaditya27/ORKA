@@ -165,9 +165,18 @@ private fun queryAlarmCapabilities(
     val fullScreenIntentGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
         notificationManager.canUseFullScreenIntent()
 
+    // Independent of the app-level areNotificationsEnabled() check below — a user can mute or
+    // downgrade this specific channel via system settings while leaving the app's notifications
+    // on overall. The channel is created (and therefore always present) in AlarmManagerRegistrar's
+    // init before any reminder can fire, so a null channel here would only mean it hasn't been
+    // created yet, not that it's blocked — treat that as not-yet-known-bad rather than failing.
+    val alarmChannelEnabled = notificationManager.getNotificationChannel(ORKA_ALARM_CHANNEL_ID)
+        ?.let { it.importance != NotificationManager.IMPORTANCE_NONE } ?: true
+
     return AlarmCapabilities(
         exactAlarmsGranted = alarmManager.canScheduleExactAlarms(),
         notificationsGranted = notificationManager.areNotificationsEnabled(),
+        alarmChannelEnabled = alarmChannelEnabled,
         fullScreenIntentGranted = fullScreenIntentGranted,
         batteryOptimizationIgnored = powerManager.isIgnoringBatteryOptimizations(context.packageName),
         oemActionNeeded = requiresOemAction(Build.MANUFACTURER),
@@ -177,6 +186,7 @@ private fun queryAlarmCapabilities(
 internal fun deriveCapabilityState(capabilities: AlarmCapabilities): AlarmCapabilityState = when {
     !capabilities.exactAlarmsGranted -> AlarmCapabilityState.EXACT_ALARM_DENIED
     !capabilities.notificationsGranted -> AlarmCapabilityState.NOTIFICATION_BLOCKED
+    !capabilities.alarmChannelEnabled -> AlarmCapabilityState.ALARM_CHANNEL_BLOCKED
     !capabilities.fullScreenIntentGranted -> AlarmCapabilityState.FULL_SCREEN_INTENT_DENIED
     !capabilities.batteryOptimizationIgnored -> AlarmCapabilityState.BATTERY_OPTIMIZATION_ENABLED
     capabilities.oemActionNeeded -> AlarmCapabilityState.OEM_ACTION_REQUIRED

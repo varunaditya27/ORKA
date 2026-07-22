@@ -115,6 +115,21 @@ class DiagnosticsAggregationTest {
     }
 
     @Test
+    fun derivesAlarmChannelBlockedWhenChannelMutedIndependentlyOfAppLevelToggle() {
+        val state = deriveCapabilityState(
+            AlarmCapabilities(
+                exactAlarmsGranted = true,
+                notificationsGranted = true,
+                alarmChannelEnabled = false,
+                fullScreenIntentGranted = true,
+                batteryOptimizationIgnored = true,
+            ),
+        )
+
+        assertThat(state).isEqualTo(AlarmCapabilityState.ALARM_CHANNEL_BLOCKED)
+    }
+
+    @Test
     fun derivesFullScreenIntentDeniedWhenOnlyThatCheckFails() {
         val state = deriveCapabilityState(
             AlarmCapabilities(

@@ -56,6 +56,7 @@ enum class AlarmCapabilityState {
     READY,
     EXACT_ALARM_DENIED,
     NOTIFICATION_BLOCKED,
+    ALARM_CHANNEL_BLOCKED,
     FULL_SCREEN_INTENT_DENIED,
     BATTERY_OPTIMIZATION_ENABLED,
     OEM_ACTION_REQUIRED,
@@ -70,6 +71,11 @@ enum class AlarmCapabilityState {
 data class AlarmCapabilities(
     val exactAlarmsGranted: Boolean = false,
     val notificationsGranted: Boolean = false,
+    // Independent of notificationsGranted (the app-level toggle) — Android lets a user mute or
+    // downgrade a single notification channel while leaving the app's notifications on overall.
+    // A user who finds ORKA's alarm channel too disruptive and quiets just that channel would
+    // otherwise pass every other check while reminders silently stop showing meaningfully.
+    val alarmChannelEnabled: Boolean = true,
     // Enforced by the platform only on API 34+ (Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
     // defaults true so pre-34 devices — where this restriction doesn't exist — never show it as failing.
     val fullScreenIntentGranted: Boolean = true,

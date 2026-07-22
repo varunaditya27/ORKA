@@ -59,6 +59,7 @@ fun DiagnosticsRoute(
             Text("Alarm capability checks", style = MaterialTheme.typography.headlineMedium)
             CapabilityRow("Exact alarms", isOk = capabilities.exactAlarmsGranted)
             CapabilityRow("Notifications", isOk = capabilities.notificationsGranted)
+            CapabilityRow("Alarm channel enabled", isOk = capabilities.alarmChannelEnabled)
             CapabilityRow("Full-screen alarm display", isOk = capabilities.fullScreenIntentGranted)
             CapabilityRow("Battery unrestricted", isOk = capabilities.batteryOptimizationIgnored)
             CapabilityRow("OEM setup", isOk = !capabilities.oemActionNeeded)
