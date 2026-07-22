@@ -122,10 +122,27 @@ builds stay lightweight regardless of how often the app itself is rebuilt/reinst
 - Runs on `com.google.ai.edge.litertlm:litertlm-android`'s Kotlin `Engine`/`Conversation` API
   (successor to MediaPipe `LlmInference`, which is now maintenance-only and does not gain
   new capabilities).
-- `GemmaEngineHolder` keeps one warm `Engine` for the process lifetime — `Engine.initialize()`
-  can take up to ~10s, so it must not be rebuilt per parse call or per ViewModel instance.
-- Runs on the CPU backend (`Backend.CPU()`) for reliability; GPU/NPU backends are available in
-  the library but require additional native-library manifest entries and were not enabled here.
+- `GemmaEngineHolder` keeps one warm `Engine` for the process lifetime, guarded by a mutex held
+  for the *entire* duration of each call (not just creation) — a native engine closed mid-inference
+  from another coroutine is a JNI-level use-after-close, not something a Kotlin exception handler
+  can recover from. Real-device measurement showed `Engine.initialize()` can take minutes rather
+  than seconds for a multi-gigabyte model (largely storage-bound page-fault time), so
+  `RootViewModel` proactively warms the engine at app startup rather than waiting for the user's
+  first capture to pay that cost.
+- Engine creation cascades **NPU → GPU → CPU**, using whichever backend actually initializes on
+  this device; CPU is the guaranteed-available last resort, with an explicit thread count
+  (`Runtime.getRuntime().availableProcessors()`) rather than leaving it unspecified. `maxNumTokens`
+  is set generously (8192) to comfortably cover the largest system prompt plus a full JSON
+  response — it's the engine's *total* context budget (prompt + output combined), not an
+  output-only cap. `cacheDir` is set to the app's cache directory.
+- Every Gemma call site (parse, split, reschedule, snooze, clarification) sends its static
+  rules/schema/examples as a proper `ConversationConfig.systemInstruction`, not mixed into the
+  same message as the per-call dynamic details — models commonly weight system-role content
+  differently than same-turn user content.
+- `model_config.yaml` (PC-side, gitignored — see `model_config.yaml.example`) can point at a
+  different pushed `.litertlm` file for side-by-side evaluation; `scripts/push_model.sh` pushes
+  it (skipping the transfer if an identical file is already on-device) and writes the on-device
+  selector file `CompanionKitModelInstaller` checks with the highest priority.
 - `DefaultTaskParser.parse()` only attempts Gemma inference when the installed model file is
   above a minimum valid size threshold (10MB) — a corrupt/placeholder file transparently falls
   back to the regex parser instead of silently reporting `ParseMode.GEMMA` without ever loading
@@ -135,12 +152,18 @@ builds stay lightweight regardless of how often the app itself is rebuilt/reinst
 
 - Runtime model copy (`files/model`) remains excluded from backup and transfer rules
 - Prevents oversized backup payloads and restore inconsistencies
+- The task database is **not** excluded — a personal task manager that discarded every task,
+  reminder, and interaction history entry on backup/restore or device migration would defeat
+  its own purpose; reminders past their fire time are safely pruned and future ones re-armed by
+  `AlarmRefreshWorker`/`OrkaBootReceiver` regardless of restore timing
 
 ---
 
 ## 4. Parsing and draft generation
 
-`DefaultTaskParser` provides deterministic draft extraction and confidence hints.
+`DefaultTaskParser` prefers Gemma-backed extraction when the on-device model is ready, with a
+deterministic regex/heuristic parser as the always-available fallback and confidence hints in
+either mode.
 
 ```mermaid
 sequenceDiagram
@@ -158,10 +181,16 @@ sequenceDiagram
 
 ### Parse-mode semantics
 
-- `GEMMA`: model file is present and non-empty in app model storage
-- `FALLBACK`: parser runs deterministic heuristics without model presence
+- `GEMMA`: the on-device model is ready and its response parsed into a valid draft
+- `FALLBACK`: model unavailable/too small, or its response failed to parse — the deterministic
+  regex/heuristic parser produced the draft instead
 
-> Current implementation focuses on deterministic reliability while keeping model-provisioning infrastructure production-ready.
+> Gemma also elevates task splitting, rescheduling, snooze duration, and clarification deadline
+> suggestions beyond their mechanical defaults (see `DefaultTaskSplitter`,
+> `DefaultTaskRescheduleAdvisor`, `DefaultTaskSnoozeAdvisor`, `DefaultTaskClarificationAdvisor` in
+> `data:parser`) — each validates the model's response and falls back to its own deterministic
+> default whenever the model isn't ready or the suggestion doesn't parse, exactly like parsing
+> itself.
 
 ---
 
@@ -193,8 +222,10 @@ Action surface is deterministic and bounded:
 
 - start
 - completion
+- dismiss
 - acknowledgement
-- context action (snooze/reschedule/split)
+- context action (snooze/reschedule/split — each Gemma-elevated beyond its mechanical default,
+  with a validated-response-or-fallback discipline identical to parsing itself)
 
 This keeps runtime behavior predictable and testable under high urgency scenarios.
 
@@ -205,7 +236,10 @@ This keeps runtime behavior predictable and testable under high urgency scenario
 `DiagnosticsRepository` aggregates:
 
 - exact alarm permission readiness
-- notification availability
+- notification availability (app-level toggle)
+- alarm channel readiness (channel-level — a user can mute/downgrade just this one notification
+  channel while leaving the app's notifications on overall; checked independently of the
+  app-level toggle above)
 - battery optimization posture
 - OEM action requirement
 - model availability
@@ -237,6 +271,8 @@ This powers onboarding and diagnostics guidance for aggressive process managemen
 - Parser/installer behavior in android tests
 - app flow coverage in compose instrumentation suites
 - room DAO validation in `core:database` android tests
+- room schema migration validation via `MigrationTestHelper` (`OrkaDatabaseMigrationTest`),
+  covering each registered migration plus the full chain from the oldest supported version
 
 ### Performance gates
 
@@ -256,6 +292,10 @@ Given OEM power-management variance, ORKA validates behavior against mixed vendo
 | OnePlus/OPlus (OxygenOS) | Medium-High | Background/auto-launch + unrestricted battery |
 | Xiaomi/MIUI | High | OEM autostart/background allowances required |
 | OPPO/Realme (ColorOS) | High | Aggressive kill mitigation via OEM settings |
+
+Validated on a real OPPO/ColorOS device (API 36): onboarding correctly surfaces OEM-specific
+guidance, state-aware capability checks (exact alarms/notifications/battery/OEM) reflect real
+device state, and the device-pushed model is detected and loaded successfully.
 
 ---
 

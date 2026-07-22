@@ -1,9 +1,7 @@
 <!-- markdownlint-disable MD033 -->
 <div align="center">
 
-# 🚀 ORKA
-
-<img src="branding/source/logo.svg" alt="ORKA logo" width="160" />
+<img src="branding/source/logo-banner.svg" alt="ORKA" width="100%" />
 
 **Execution, not intention.**
 
@@ -11,7 +9,7 @@
 
 ![Min SDK](https://img.shields.io/badge/Min%20SDK-31-blue.svg)
 ![Compile SDK](https://img.shields.io/badge/Compile%20SDK-35-blueviolet.svg)
-![Kotlin](https://img.shields.io/badge/Kotlin-2.1.20-orange.svg)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.3.20-orange.svg)
 ![License](https://img.shields.io/badge/License-Proprietary-red.svg)
 
 </div>
@@ -41,7 +39,8 @@ ORKA uses `AlarmManager`-driven exact alarms and an action surface designed for 
 
 - `START_TASK`
 - `MARK_DONE`
-- context-sensitive options (reschedule/snooze/split)
+- `DISMISS_TASK`
+- context-sensitive options (reschedule/snooze/split), each elevated by the on-device model beyond its mechanical default
 - acknowledgement trail for behavior profiling
 
 ### 🧠 On-device model (push once, build light)
@@ -51,6 +50,8 @@ The model is **not** bundled into the APK. Push `gemma-4-E4B-it.litertlm` to the
 - The model survives app reinstalls/updates — it's outside the app's own storage and outside the APK, so every subsequent `assembleDebug`/`installDebug` is a lightweight build.
 - No manual model-path typing during onboarding; ORKA re-checks automatically.
 - Fallback parsing remains available if the model isn't present or fails to load.
+- Inference tries NPU, then GPU, then CPU, using whichever backend actually initializes on the device — CPU (with an explicit thread count) is the guaranteed-available last resort.
+- Swapping between multiple pushed `.litertlm` files (e.g. to compare size/quality/latency) is config-driven from your PC — see `model_config.yaml.example` and `scripts/push_model.sh`, no on-device editing or rebuild required.
 
 ### 📱 OEM-aware reliability posture
 
@@ -102,6 +103,11 @@ adb push gemma-4-E4B-it.litertlm /data/local/tmp/gemma-4-E4B-it.litertlm
 You only need to do this once per device (it survives app reinstalls, since it lives outside
 the app's own storage). If you rebuild/reinstall the app afterward, no re-push is needed.
 
+To test multiple models side by side instead, copy `model_config.yaml.example` to
+`model_config.yaml`, point `model_path` at whichever local `.litertlm` file you want to try, and
+run `./scripts/push_model.sh` — it pushes (skipping the transfer if that file's already on the
+device) and selects it as the active model in one step.
+
 ### 🎬 3) First launch behavior
 
 - ORKA detects the pushed model at `/data/local/tmp/gemma-4-E4B-it.litertlm` automatically.
@@ -125,9 +131,9 @@ the app's own storage). If you rebuild/reinstall the app afterward, no re-push i
 
 ---
 
-## 🔋 Device reliability checklist (OnePlus-focused)
+## 🔋 Device reliability checklist (OEM-focused: Xiaomi/Realme/OPPO/OnePlus)
 
-For best reminder delivery on OnePlus/OxygenOS:
+For best reminder delivery on aggressive-power-management OEM skins (MIUI/ColorOS/OxygenOS):
 
 1. Allow exact alarms.
 2. Set battery usage for ORKA to **Unrestricted**.
@@ -147,7 +153,8 @@ For best reminder delivery on OnePlus/OxygenOS:
 
 - Distribution target: **personal ADB installs**
 - Play Store delivery: **out of scope** for this workflow
-- Model source of truth: pushed once to `/data/local/tmp/gemma-4-E4B-it.litertlm` on-device (never bundled into the APK)
+- Model source of truth: pushed once to `/data/local/tmp/gemma-4-E4B-it.litertlm` on-device (never bundled into the APK); `model_config.yaml` can point at a different pushed file for side-by-side testing
+- Verified stable on a real device (OPPO/ColorOS, API 36)
 
 ---
 
