@@ -50,9 +50,11 @@ class SchedulerOrchestratorTest {
         )
 
         assertThat(mode).isEqualTo(SchedulerMode.RL)
-        assertThat(reminders).hasSize(1)
-        assertThat(reminders.first().schedulerMode).isEqualTo(SchedulerMode.RL)
-        assertThat(reminders.first().scheduledTime).isEqualTo(TestFixtures.now.plus(Duration.ofHours(2)))
+        assertThat(reminders).hasSize(3)
+        assertThat(reminders.all { it.schedulerMode == SchedulerMode.RL }).isTrue()
+        assertThat(reminders[0].scheduledTime).isEqualTo(TestFixtures.now.plus(Duration.ofHours(2)))
+        assertThat(reminders[1].scheduledTime).isEqualTo(task.deadline.minus(Duration.ofMinutes(15)))
+        assertThat(reminders[2].scheduledTime).isEqualTo(task.deadline.minus(Duration.ofMinutes(5)))
     }
 
     @Test

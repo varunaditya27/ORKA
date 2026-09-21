@@ -31,8 +31,9 @@ class PreEventSchedulerPolicy @Inject constructor() {
         val anchor = task.eventStartTime ?: task.deadline
         val profile = task.preEventProfile ?: PreEventProfile.MEETING
         val now = context.now
+        val secondsUntilEvent = Duration.between(now, anchor).seconds
+        if (secondsUntilEvent <= 0) return emptyList()
         val minutesUntilEvent = Duration.between(now, anchor).toMinutes()
-        if (minutesUntilEvent <= 0) return emptyList()
 
         val rawReminders = if (minutesUntilEvent <= 120) {
             urgentPreEventReminders(task, profile, anchor, now)
@@ -41,7 +42,7 @@ class PreEventSchedulerPolicy @Inject constructor() {
                 .mapNotNull { offsetMinutes ->
                     val scheduled = anchor.minus(Duration.ofMinutes(offsetMinutes))
                     if (scheduled.isAfter(now)) {
-                        val adjusted = applyQuietHoursPolicy(scheduled, offsetMinutes)
+                        val adjusted = applyQuietHoursPolicy(scheduled, offsetMinutes, anchor)
                         ReminderEvent(
                             taskId = task.id,
                             scheduledTime = adjusted,
@@ -110,11 +111,11 @@ class PreEventSchedulerPolicy @Inject constructor() {
         PreEventProfile.DEADLINE_EVENT -> listOf(3 * 24 * 60L, 24 * 60L, 3 * 60L, 30L)
     }
 
-    private fun applyQuietHoursPolicy(scheduled: Instant, minutesBefore: Long): Instant {
+    private fun applyQuietHoursPolicy(scheduled: Instant, minutesBefore: Long, anchor: Instant): Instant {
         val zoned = scheduled.atZone(IST_ZONE_ID)
         val localTime = zoned.toLocalTime()
         val inQuietHours = localTime >= LocalTime.of(23, 0) || localTime < LocalTime.of(7, 0)
-        val shouldBypass = minutesBefore == 30L || minutesBefore == 5L
+        val shouldBypass = minutesBefore <= 30L
         if (!inQuietHours || shouldBypass) return scheduled
 
         val targetDate = if (localTime >= LocalTime.of(23, 0)) {
@@ -122,7 +123,8 @@ class PreEventSchedulerPolicy @Inject constructor() {
         } else {
             zoned.toLocalDate()
         }
-        return ZonedDateTime.of(targetDate, LocalTime.of(7, 30), IST_ZONE_ID).toInstant()
+        val adjusted = ZonedDateTime.of(targetDate, LocalTime.of(7, 30), IST_ZONE_ID).toInstant()
+        return if (adjusted.isBefore(anchor)) adjusted else scheduled
     }
 
     private fun reminderLabel(
@@ -211,22 +213,69 @@ class AdaptiveSchedulerPolicy @Inject constructor() : SchedulerPolicy {
         val ruleBased = RuleBasedSchedulerPolicy().schedule(task, context)
         val snoozeRate = context.profile.categorySnoozeRates[task.category] ?: context.profile.snoozeRate
         val shiftHours = if (snoozeRate > 0.5f) -1 else 1
+        val minValidTime = context.now.plusSeconds(30)
+        val maxSafeTime = task.deadline.minus(Duration.ofMinutes(15)).takeIf { it.isAfter(minValidTime) } ?: task.deadline
 
-        return ruleBased.map { reminder ->
+        val reminders = ruleBased.map { reminder ->
+            val shifted = if (shiftHours > 0) {
+                minOf(reminder.scheduledTime.plus(Duration.ofHours(shiftHours.toLong())), maxSafeTime)
+            } else {
+                reminder.scheduledTime.plus(Duration.ofHours(shiftHours.toLong()))
+            }
+            val aligned = alignToProductiveWindow(shifted, context.profile)
+            val finalTime = aligned.coerceAtLeast(minValidTime)
             reminder.copy(
-                scheduledTime = alignToProductiveWindow(
-                    reminder.scheduledTime.plus(Duration.ofHours(shiftHours.toLong())),
-                    context.profile,
-                ),
+                scheduledTime = finalTime,
+                minutesBeforeAnchor = Duration.between(finalTime, task.deadline).toMinutes(),
                 schedulerMode = mode,
             )
-        }.sortedBy { it.scheduledTime }
+        }.filter { it.scheduledTime.isBefore(task.deadline) || it.scheduledTime == task.deadline }
+            .distinctBy { it.scheduledTime }
+            .sortedBy { it.scheduledTime }
+
+        val finalReminders = if (reminders.isEmpty() && task.deadline.isAfter(minValidTime)) {
+            val fallbackTime = minOf(task.deadline.minus(Duration.ofMinutes(15)), task.deadline)
+                .coerceAtLeast(minValidTime)
+            listOf(
+                ReminderEvent(
+                    taskId = task.id,
+                    scheduledTime = fallbackTime,
+                    sequenceNumber = 1,
+                    alarmManagerId = stableAlarmId(task.id, 0),
+                    primitiveType = task.primitiveType,
+                    preEventProfile = task.preEventProfile,
+                    minutesBeforeAnchor = Duration.between(fallbackTime, task.deadline).toMinutes(),
+                    schedulerMode = mode,
+                ),
+            )
+        } else {
+            reminders
+        }
+
+        return finalReminders.mapIndexed { index, reminder ->
+            reminder.copy(
+                sequenceNumber = index + 1,
+                alarmManagerId = stableAlarmId(task.id, index),
+            )
+        }
     }
 
     private fun alignToProductiveWindow(time: Instant, profile: BehaviorProfile): Instant {
         val zoned = time.atZone(IST_ZONE_ID)
-        val adjustedHour = zoned.hour.coerceIn(profile.productiveStartHour, profile.productiveEndHour)
-        return zoned.withHour(adjustedHour).withMinute(0).withSecond(0).toInstant()
+        val start = profile.productiveStartHour
+        val end = profile.productiveEndHour
+        val currentHour = zoned.hour
+
+        val adjustedHour = when {
+            start <= end -> currentHour.coerceIn(start, end)
+            currentHour >= start || currentHour <= end -> currentHour
+            else -> {
+                val distToStart = (start - currentHour + 24) % 24
+                val distToEnd = (currentHour - end + 24) % 24
+                if (distToStart <= distToEnd) start else end
+            }
+        }
+        return zoned.withHour(adjustedHour).toInstant()
     }
 }
 
@@ -278,21 +327,46 @@ class SchedulerOrchestrator @Inject constructor(
             settings.rlSchedulingEnabled -> {
                 val recommendation = rlTrainer.recommend(task, context)
                 if (recommendation != null) {
-                    SchedulerMode.RL to listOf(
+                    val minValidTime = context.now.plusSeconds(30)
+                    val primaryTime = context.now
+                        .plus(Duration.ofHours(recommendation.nextReminderDelayHours.toLong()))
+                        .coerceAtLeast(minValidTime)
+
+                    val candidateTimes = mutableListOf<Instant>()
+                    if (primaryTime.isBefore(task.deadline)) {
+                        candidateTimes.add(primaryTime)
+                    }
+
+                    val safety15 = task.deadline.minus(Duration.ofMinutes(15))
+                    if (safety15.isAfter(minValidTime)) {
+                        candidateTimes.add(safety15)
+                    }
+
+                    val safety5 = task.deadline.minus(Duration.ofMinutes(5))
+                    if (safety5.isAfter(minValidTime)) {
+                        candidateTimes.add(safety5)
+                    }
+
+                    val finalTimes = if (candidateTimes.isEmpty() && task.deadline.isAfter(minValidTime)) {
+                        listOf(task.deadline.minus(Duration.ofMinutes(1)).coerceAtLeast(minValidTime))
+                    } else {
+                        candidateTimes.distinct().filter { it.isBefore(task.deadline) }.sorted()
+                    }
+
+                    val reminders = finalTimes.mapIndexed { index, time ->
                         ReminderEvent(
                             taskId = task.id,
-                            scheduledTime = context.now.plus(Duration.ofHours(recommendation.nextReminderDelayHours.toLong())),
-                            sequenceNumber = 1,
-                            alarmManagerId = stableAlarmId(task.id, 0),
+                            scheduledTime = time,
+                            sequenceNumber = index + 1,
+                            alarmManagerId = stableAlarmId(task.id, index),
                             primitiveType = PrimitiveType.TASK,
                             preEventProfile = null,
-                            minutesBeforeAnchor = Duration.between(
-                                context.now.plus(Duration.ofHours(recommendation.nextReminderDelayHours.toLong())),
-                                task.deadline,
-                            ).toMinutes(),
+                            minutesBeforeAnchor = Duration.between(time, task.deadline).toMinutes(),
                             schedulerMode = SchedulerMode.RL,
-                        ),
-                    )
+                        )
+                    }
+
+                    SchedulerMode.RL to reminders
                 } else {
                     scheduleAdaptiveOrRule(task, context, settings.adaptiveSchedulingEnabled)
                 }

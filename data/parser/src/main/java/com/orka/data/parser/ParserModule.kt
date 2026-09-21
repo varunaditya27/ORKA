@@ -736,10 +736,31 @@ class DefaultTaskParser @Inject constructor(
         val match = DURATION_REGEX.find(rawInput) ?: return null
         val amount = match.groupValues[1].toLongOrNull() ?: return null
         val unit = match.groupValues[2]
+
+        if (unit.startsWith("day")) {
+            val targetDate = nowIst.toLocalDate().plusDays(amount)
+            val timeResolution = resolveTimeExpression(rawInput, nowIst)
+            if (timeResolution.time != null) {
+                val resolved = ZonedDateTime.of(targetDate, timeResolution.time, IST_ZONE_ID)
+                return TemporalResolution(
+                    resolvedInstant = resolved.toInstant(),
+                    confidence = 0.95f,
+                    temporalExpressionRaw = "${match.value} ${timeResolution.raw ?: ""}".trim(),
+                )
+            }
+            val defaultTime = LocalTime.of(17, 0)
+            val resolved = ZonedDateTime.of(targetDate, defaultTime, IST_ZONE_ID)
+            return TemporalResolution(
+                resolvedInstant = resolved.toInstant(),
+                confidence = 0.85f,
+                temporalExpressionRaw = match.value,
+                lowConfidenceFields = setOf("deadline"),
+            )
+        }
+
         val resolved = when {
             unit.startsWith("min") -> nowIst.plusMinutes(amount)
             unit.startsWith("hour") || unit.startsWith("hr") -> nowIst.plusHours(amount)
-            unit.startsWith("day") -> nowIst.plusDays(amount)
             else -> nowIst
         }
         return TemporalResolution(
@@ -772,8 +793,14 @@ class DefaultTaskParser @Inject constructor(
         DayOfWeek.entries.forEach { day ->
             val token = day.name.lowercase(Locale.ROOT)
             if ("next $token" in rawInput) {
+                val nextOccurrence = today.with(TemporalAdjusters.next(day))
+                val targetDate = if (today.dayOfWeek < day) {
+                    nextOccurrence.plusWeeks(1)
+                } else {
+                    nextOccurrence
+                }
                 return DateResolution(
-                    date = today.with(TemporalAdjusters.next(day)),
+                    date = targetDate,
                     confidence = 0.9f,
                     raw = "next $token",
                 )
@@ -893,8 +920,11 @@ class DefaultTaskParser @Inject constructor(
     }
 
     private fun inferAmPmTime(hourInput: Int, minute: Int, rawInput: String, nowIst: ZonedDateTime): Pair<LocalTime, Float> {
-        val hour = hourInput.coerceIn(1, 12)
         val lowercase = rawInput.lowercase(Locale.ROOT)
+        if (hourInput in 13..23 || hourInput == 0) {
+            return LocalTime.of(hourInput, minute) to 0.95f
+        }
+        val hour = hourInput.coerceIn(1, 12)
         return when {
             hour == 12 -> {
                 val resolved = if ("midnight" in lowercase || "raat" in lowercase) {
@@ -912,6 +942,9 @@ class DefaultTaskParser @Inject constructor(
     }
 
     private fun parseTimeWithAmPm(hourInput: Int, minute: Int, period: String): LocalTime {
+        if (hourInput in 13..23 || hourInput == 0) {
+            return LocalTime.of(hourInput, minute)
+        }
         val hour = hourInput.coerceIn(1, 12)
         val normalizedHour = when (period.lowercase(Locale.ROOT)) {
             "am" -> if (hour == 12) 0 else hour

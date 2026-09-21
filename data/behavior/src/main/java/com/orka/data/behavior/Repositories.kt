@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.orka.core.database.BehaviorProfileDao
 import com.orka.core.database.MIGRATION_1_2
 import com.orka.core.database.MIGRATION_2_3
+import com.orka.core.database.MIGRATION_3_4
 import com.orka.core.database.OrkaDatabase
 import com.orka.core.database.ReminderDao
 import com.orka.core.database.TaskDao
@@ -83,8 +84,7 @@ class RoomTaskRepository @Inject constructor(
     }
 
     override suspend fun replaceReminders(taskId: String, reminders: List<com.orka.core.model.ReminderEvent>) {
-        reminderDao.deleteScheduledForTask(taskId)
-        reminderDao.insertAll(reminders.map { it.asEntity() })
+        reminderDao.replaceScheduled(taskId, reminders.map { it.asEntity() })
     }
 
     override suspend fun markReminderDelivered(reminderId: String, firedAt: Instant) {
@@ -124,13 +124,25 @@ class DefaultBehaviorProfileRepository @Inject constructor(
         val categorySnooze = current.categorySnoozeRates.toMutableMap()
         val categoryCompletion = current.categoryCompletionRates.toMutableMap()
 
-        if (event.type.name.startsWith("SNOOZE")) {
-            val currentRate = categorySnooze[task.category] ?: 0f
-            categorySnooze[task.category] = (currentRate + 0.1f).coerceAtMost(1f)
-        }
-        if (event.type == com.orka.core.model.InteractionType.MARK_DONE) {
-            val currentRate = categoryCompletion[task.category] ?: 0f
-            categoryCompletion[task.category] = (currentRate + 0.1f).coerceAtMost(1f)
+        val currentSnooze = categorySnooze[task.category] ?: 0f
+        val currentCompletion = categoryCompletion[task.category] ?: 0f
+        val alpha = 0.1f
+
+        when {
+            event.type.name.startsWith("SNOOZE") || event.type == com.orka.core.model.InteractionType.IGNORE -> {
+                categorySnooze[task.category] = (currentSnooze * (1f - alpha) + alpha * 1.0f).coerceIn(0f, 1f)
+                categoryCompletion[task.category] = (currentCompletion * (1f - alpha)).coerceIn(0f, 1f)
+            }
+            event.type == com.orka.core.model.InteractionType.MARK_DONE -> {
+                categoryCompletion[task.category] = (currentCompletion * (1f - alpha) + alpha * 1.0f).coerceIn(0f, 1f)
+                categorySnooze[task.category] = (currentSnooze * (1f - alpha)).coerceIn(0f, 1f)
+            }
+            event.type == com.orka.core.model.InteractionType.START_TASK -> {
+                categorySnooze[task.category] = (currentSnooze * (1f - alpha)).coerceIn(0f, 1f)
+            }
+            event.type == com.orka.core.model.InteractionType.DISMISS_TASK -> {
+                categoryCompletion[task.category] = (currentCompletion * (1f - alpha)).coerceIn(0f, 1f)
+            }
         }
 
         dao.upsert(
@@ -154,8 +166,8 @@ object DatabaseModule {
         context,
         OrkaDatabase::class.java,
         "orka.db",
-    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
-        .fallbackToDestructiveMigration()
+    ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        .fallbackToDestructiveMigration(dropAllTables = true)
         .build()
 
     @Provides

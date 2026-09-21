@@ -80,11 +80,61 @@ class OrkaDatabaseMigrationTest {
     }
 
     @Test
-    fun migrateAllTheWayFrom1To3PreservesData() {
+    fun migrate3To4AddsCompositeIndicesWithoutDroppingExistingRows() {
+        helper.createDatabase(TEST_DB_NAME, 3).apply {
+            execSQL(
+                """
+                INSERT INTO tasks (
+                    id, rawInput, title, description, deadline, deadlineConfidence, primitiveType,
+                    eventStartTime, eventDurationMinutes, preEventProfile, linkedEntityId, clarificationNeeded,
+                    clarificationReason, resolvedTimezone, temporalExpressionRaw, category,
+                    estimatedEffortMinutes, urgencyScore, status, createdAt, updatedAt, completedAt,
+                    userCorrectedFields
+                ) VALUES (
+                    'task-1', 'raw', 'Title', NULL, 0, 0.9, 'TASK', NULL, NULL, NULL, NULL, 0,
+                    NULL, 'Asia/Kolkata', NULL, 'PROFESSIONAL', 90, 4.0, 'PENDING', 0, 0, NULL, ''
+                )
+                """.trimIndent(),
+            )
+            execSQL(
+                """
+                INSERT INTO reminders (
+                    id, taskId, scheduledTime, actualFireTime, sequenceNumber, alarmManagerId,
+                    primitiveType, preEventProfile, minutesBeforeAnchor, reminderLabel, status, schedulerMode
+                ) VALUES (
+                    'reminder-1', 'task-1', 0, NULL, 1, 100, 'TASK', NULL, NULL, NULL, 'SCHEDULED', 'RULE_BASED'
+                )
+                """.trimIndent(),
+            )
+            close()
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB_NAME, 4, true, MIGRATION_3_4)
+        val taskCursor = migrated.query("SELECT id FROM tasks WHERE id = 'task-1'")
+        assertThat(taskCursor.moveToFirst()).isTrue()
+        taskCursor.close()
+
+        val taskIndexCursor = migrated.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tasks'",
+        )
+        val taskIndexNames = generateSequence { if (taskIndexCursor.moveToNext()) taskIndexCursor.getString(0) else null }.toList()
+        taskIndexCursor.close()
+        assertThat(taskIndexNames).contains("index_tasks_status_deadline")
+
+        val reminderIndexCursor = migrated.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'reminders'",
+        )
+        val reminderIndexNames = generateSequence { if (reminderIndexCursor.moveToNext()) reminderIndexCursor.getString(0) else null }.toList()
+        reminderIndexCursor.close()
+        assertThat(reminderIndexNames).contains("index_reminders_status_scheduledTime")
+    }
+
+    @Test
+    fun migrateAllTheWayFrom1To4PreservesData() {
         helper.createDatabase(TEST_DB_NAME, 1).apply { close() }
 
-        val migrated = helper.runMigrationsAndValidate(TEST_DB_NAME, 3, true, MIGRATION_1_2, MIGRATION_2_3)
-        // A full round-trip through both migrations must still leave a queryable, valid schema —
+        val migrated = helper.runMigrationsAndValidate(TEST_DB_NAME, 4, true, MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        // A full round-trip through all migrations must still leave a queryable, valid schema —
         // this is what would have caught a version bump that forgot to register a migration.
         val cursor = migrated.query("SELECT COUNT(*) FROM tasks")
         assertThat(cursor.moveToFirst()).isTrue()

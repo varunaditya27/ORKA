@@ -95,4 +95,55 @@ class PreEventSchedulerPolicyTest {
         assertThat(localTime.hour).isEqualTo(6)
         assertThat(localTime.minute).isEqualTo(40)
     }
+
+    @Test
+    fun quietHoursDoesNotDelayReminderPastEventStart() = runBlocking {
+        val nowIst = ZonedDateTime.of(2026, 3, 30, 5, 0, 0, 0, ist)
+        val eventIst = ZonedDateTime.of(2026, 3, 30, 7, 15, 0, 0, ist)
+        val task = TestFixtures.task(
+            title = "Early Flight",
+            deadline = eventIst.toInstant(),
+            primitiveType = PrimitiveType.EVENT,
+            eventStartTime = eventIst.toInstant(),
+            preEventProfile = PreEventProfile.APPOINTMENT,
+        )
+
+        val reminders = policy.schedule(
+            task = task,
+            context = SchedulingContext(
+                profile = TestFixtures.behaviorProfile(),
+                interactionHistory = emptyList(),
+                now = nowIst.toInstant(),
+            ),
+        )
+
+        val twoHourReminder = reminders.firstOrNull { it.minutesBeforeAnchor == 120L }
+        assertThat(twoHourReminder).isNotNull()
+        assertThat(twoHourReminder!!.scheduledTime).isLessThan(eventIst.toInstant())
+    }
+
+    @Test
+    fun subMinuteImminentEventSchedulesImmediateReminderBeforeEventStart() = runBlocking {
+        val nowIst = ZonedDateTime.of(2026, 3, 30, 10, 0, 0, 0, ist)
+        val eventIst = nowIst.plusSeconds(40) // 40 seconds away
+        val task = TestFixtures.task(
+            title = "Standup Quick Sync",
+            deadline = eventIst.toInstant(),
+            primitiveType = PrimitiveType.EVENT,
+            eventStartTime = eventIst.toInstant(),
+            preEventProfile = PreEventProfile.CALL,
+        )
+
+        val reminders = policy.schedule(
+            task = task,
+            context = SchedulingContext(
+                profile = TestFixtures.behaviorProfile(),
+                interactionHistory = emptyList(),
+                now = nowIst.toInstant(),
+            ),
+        )
+
+        assertThat(reminders).isNotEmpty()
+        assertThat(reminders.all { it.scheduledTime.isBefore(eventIst.toInstant()) }).isTrue()
+    }
 }

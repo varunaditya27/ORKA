@@ -177,6 +177,90 @@ class DefaultRlTrainerTest {
         assertThat(summary.trained).isTrue()
         assertThat(summary.episodesUsed).isEqualTo(10) // 1 episode run 10 times in repeat loop
         assertThat(summary.message).contains("successfully updated")
+
+        val weightsFile = File(context.filesDir, "rl_weights.txt")
+        val tmpFile = File(context.filesDir, "rl_weights.txt.tmp")
+        assertThat(weightsFile.exists()).isTrue()
+        assertThat(tmpFile.exists()).isFalse()
+        val lines = weightsFile.readLines()
+        assertThat(lines).hasSize(8)
+        lines.forEach { line ->
+            assertThat(line.split(",")).hasSize(16)
+        }
+    }
+
+    @Test
+    fun trainingWithOverdueTaskAndManyRemindersSucceedsWithPositiveReward() = runBlocking {
+        val now = Instant.now()
+        val overdueDeadline = now.minus(java.time.Duration.ofHours(2))
+        val task = TaskEntity(
+            id = "task-overdue",
+            rawInput = "Late Task",
+            title = "Late Task",
+            description = null,
+            deadline = overdueDeadline,
+            deadlineConfidence = 1.0f,
+            primitiveType = PrimitiveType.TASK,
+            eventStartTime = null,
+            eventDurationMinutes = null,
+            preEventProfile = null,
+            linkedEntityId = null,
+            clarificationNeeded = false,
+            clarificationReason = null,
+            resolvedTimezone = "Asia/Kolkata",
+            temporalExpressionRaw = null,
+            category = TaskCategory.PROFESSIONAL,
+            estimatedEffortMinutes = 30,
+            urgencyScore = 1.0f,
+            status = TaskStatus.COMPLETED,
+            createdAt = now.minus(java.time.Duration.ofDays(2)),
+            updatedAt = now,
+            completedAt = now,
+            userCorrectedFields = emptySet(),
+        )
+
+        // 30 snooze interactions + 1 mark done
+        val interactions = (1..30).map { i ->
+            InteractionEventEntity(
+                id = "int-$i",
+                taskId = "task-overdue",
+                reminderId = "rem-$i",
+                type = InteractionType.SNOOZE_SHORT,
+                timestamp = now.minus(java.time.Duration.ofHours((31 - i).toLong())),
+                responseDelaySeconds = 10L,
+                escalationApplied = false,
+                metadata = emptyMap(),
+            )
+        } + InteractionEventEntity(
+            id = "int-done",
+            taskId = "task-overdue",
+            reminderId = "rem-31",
+            type = InteractionType.MARK_DONE,
+            timestamp = now,
+            responseDelaySeconds = 10L,
+            escalationApplied = false,
+            metadata = emptyMap(),
+        )
+
+        `when`(taskDao.getAllTasks()).thenReturn(listOf(task))
+        `when`(interactionDao.getAllInteractions()).thenReturn(interactions)
+
+        val trainer = DefaultRlTrainer(
+            context = context,
+            profileRepository = FakeBehaviorProfileRepository(
+                BehaviorProfile(
+                    totalInteractions = 80,
+                    totalCompletions = 20,
+                    productiveStartHour = 22,
+                    productiveEndHour = 5,
+                ),
+            ),
+            taskDao = taskDao,
+            interactionDao = interactionDao
+        )
+
+        val summary = trainer.maybeTrain()
+        assertThat(summary.trained).isTrue()
     }
 }
 

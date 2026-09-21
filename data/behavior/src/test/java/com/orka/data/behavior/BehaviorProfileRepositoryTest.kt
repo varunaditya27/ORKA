@@ -47,6 +47,37 @@ class BehaviorProfileRepositoryTest {
         assertThat(updated.totalCompletions).isEqualTo(1)
         assertThat(updated.categoryCompletionRates[task.category]).isEqualTo(0.1f)
     }
+
+    @Test
+    fun snoozeRateDecaysWhenTasksAreStartedOrCompleted() = runBlocking {
+        val dao = FakeBehaviorProfileDao(BehaviorProfile().asEntity())
+        val repository = DefaultBehaviorProfileRepository(dao)
+        val task = TestFixtures.task()
+
+        // 1. Snooze task -> snooze rate becomes 0.1f
+        repository.updateFromInteraction(
+            task = task,
+            event = TestFixtures.interaction(taskId = task.id, type = InteractionType.SNOOZE_SHORT),
+        )
+        assertThat(repository.getProfile().categorySnoozeRates[task.category]).isEqualTo(0.1f)
+
+        // 2. Start task -> snooze rate decays
+        repository.updateFromInteraction(
+            task = task,
+            event = TestFixtures.interaction(taskId = task.id, type = InteractionType.START_TASK),
+        )
+        val afterStart = repository.getProfile()
+        assertThat(afterStart.categorySnoozeRates[task.category]).isLessThan(0.1f)
+
+        // 3. Complete task -> snooze rate decays further, completion rate rises
+        repository.updateFromInteraction(
+            task = task,
+            event = TestFixtures.interaction(taskId = task.id, type = InteractionType.MARK_DONE),
+        )
+        val afterDone = repository.getProfile()
+        assertThat(afterDone.categorySnoozeRates[task.category]).isLessThan(afterStart.categorySnoozeRates[task.category]!!)
+        assertThat(afterDone.categoryCompletionRates[task.category]).isGreaterThan(0f)
+    }
 }
 
 private class FakeBehaviorProfileDao(

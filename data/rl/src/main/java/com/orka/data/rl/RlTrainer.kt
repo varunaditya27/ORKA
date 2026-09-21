@@ -107,7 +107,14 @@ class DefaultRlTrainer @Inject constructor(
                         }
 
                         val nextHour = nextInt.timestamp.atZone(java.time.ZoneId.of("Asia/Kolkata")).hour
-                        if (nextHour < profile.productiveStartHour || nextHour > profile.productiveEndHour) {
+                        val startHour = profile.productiveStartHour
+                        val endHour = profile.productiveEndHour
+                        val isNonProductive = if (startHour <= endHour) {
+                            nextHour < startHour || nextHour > endHour
+                        } else {
+                            nextHour > endHour && nextHour < startHour
+                        }
+                        if (isNonProductive) {
                             r -= 0.3f
                         }
 
@@ -134,6 +141,7 @@ class DefaultRlTrainer @Inject constructor(
                         if (totalReminders > 3) {
                             r -= (totalReminders - 3) * 0.2f
                         }
+                        r = maxOf(1.0f, r)
 
                         updateQ(weights, s, a, r, null)
                     }
@@ -291,13 +299,28 @@ class DefaultRlTrainer @Inject constructor(
     }
 
     private fun saveWeights(context: Context, weights: Array<FloatArray>) {
-        val file = File(context.filesDir, "rl_weights.txt")
+        val targetFile = File(context.filesDir, "rl_weights.txt")
+        val tempFile = File(context.filesDir, "rl_weights.txt.tmp")
         try {
             val content = weights.joinToString("\n") { row ->
                 row.joinToString(",") { it.toString() }
             }
-            file.writeText(content)
+            tempFile.writeText(content)
+            try {
+                java.nio.file.Files.move(
+                    tempFile.toPath(),
+                    targetFile.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (e: Exception) {
+                if (!tempFile.renameTo(targetFile)) {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
+            }
         } catch (e: Exception) {
+            tempFile.delete()
             e.printStackTrace()
         }
     }

@@ -57,8 +57,89 @@ class SchedulerPoliciesTest {
 
         assertThat(reminders).isNotEmpty()
         assertThat(reminders.all { reminder ->
-            val hour = reminder.scheduledTime.atZone(java.time.ZoneId.systemDefault()).hour
+            val hour = reminder.scheduledTime.atZone(java.time.ZoneId.of("Asia/Kolkata")).hour
             hour in 10..18
         }).isTrue()
+    }
+
+    @Test
+    fun adaptiveScheduleNeverSchedulesInPastAndDeduplicatesReminders() = runBlocking {
+        val policy = AdaptiveSchedulerPolicy()
+        val now = Instant.parse("2026-03-30T09:00:00Z") // 14:30 IST
+        val shortTask = task.copy(
+            deadline = now.plus(java.time.Duration.ofHours(3)), // 17:30 IST
+        )
+
+        val reminders = policy.schedule(
+            task = shortTask,
+            context = com.orka.core.model.SchedulingContext(
+                profile = BehaviorProfile(
+                    productiveStartHour = 9,
+                    productiveEndHour = 21,
+                    categorySnoozeRates = mapOf(TaskCategory.PROFESSIONAL to 0.8f),
+                ),
+                interactionHistory = emptyList(),
+                now = now,
+            ),
+        )
+
+        assertThat(reminders).isNotEmpty()
+        // Every scheduled reminder must strictly be after now + 30s
+        assertThat(reminders.all { it.scheduledTime.isAfter(now.plusSeconds(30)) || it.scheduledTime == now.plusSeconds(30) }).isTrue()
+        // No duplicate reminder timestamps
+        val scheduledTimes = reminders.map { it.scheduledTime }
+        assertThat(scheduledTimes).containsNoDuplicates()
+    }
+
+    @Test
+    fun adaptiveScheduleSupportsNightShiftProductiveWindowWithoutCrashing() = runBlocking {
+        val policy = AdaptiveSchedulerPolicy()
+        val now = Instant.parse("2026-03-30T17:00:00Z") // 22:30 IST (inside 22:00 to 05:00 window)
+        val nightTask = task.copy(
+            deadline = now.plus(java.time.Duration.ofHours(4)), // 02:30 IST
+        )
+
+        // Should not throw IllegalArgumentException when startHour (22) > endHour (5)
+        val reminders = policy.schedule(
+            task = nightTask,
+            context = com.orka.core.model.SchedulingContext(
+                profile = BehaviorProfile(
+                    productiveStartHour = 22,
+                    productiveEndHour = 5,
+                    categorySnoozeRates = mapOf(TaskCategory.PROFESSIONAL to 0.2f),
+                ),
+                interactionHistory = emptyList(),
+                now = now,
+            ),
+        )
+
+        assertThat(reminders).isNotEmpty()
+        assertThat(reminders.all { it.scheduledTime.isBefore(nightTask.deadline) || it.scheduledTime == nightTask.deadline }).isTrue()
+    }
+
+    @Test
+    fun adaptiveScheduleGuaranteesReminderForDiligentUserNearDeadline() = runBlocking {
+        val policy = AdaptiveSchedulerPolicy()
+        val now = Instant.parse("2026-03-30T09:00:00Z") // 14:30 IST
+        val imminentTask = task.copy(
+            deadline = now.plus(java.time.Duration.ofMinutes(45)), // 15:15 IST
+        )
+
+        // Diligent user (snooze rate 0.1f) must NOT have reminders pushed past 15:15 deadline
+        val reminders = policy.schedule(
+            task = imminentTask,
+            context = com.orka.core.model.SchedulingContext(
+                profile = BehaviorProfile(
+                    productiveStartHour = 9,
+                    productiveEndHour = 21,
+                    categorySnoozeRates = mapOf(TaskCategory.PROFESSIONAL to 0.1f),
+                ),
+                interactionHistory = emptyList(),
+                now = now,
+            ),
+        )
+
+        assertThat(reminders).isNotEmpty()
+        assertThat(reminders.all { it.scheduledTime.isBefore(imminentTask.deadline) }).isTrue()
     }
 }

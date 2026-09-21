@@ -35,7 +35,10 @@ import dagger.assisted.AssistedInject
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 internal const val ORKA_ALARM_CHANNEL_ID = "orka_alarm"
 private const val ORKA_ALARM_ACTION = "com.orka.app.ALARM_TRIGGERED"
@@ -105,7 +108,11 @@ class AlarmManagerRegistrar @Inject constructor(
     }
 
     override suspend fun register(reminders: List<ReminderEvent>) {
-        reminders.forEach { reminder ->
+        val nowMillis = System.currentTimeMillis()
+        val validReminders = reminders.filter { it.scheduledTime.toEpochMilli() > nowMillis }
+        if (validReminders.isEmpty()) return
+
+        validReminders.forEach { reminder ->
             val broadcastIntent = Intent(context, OrkaAlarmReceiver::class.java).apply {
                 action = ORKA_ALARM_ACTION
                 putExtra("reminder_id", reminder.id)
@@ -126,7 +133,7 @@ class AlarmManagerRegistrar @Inject constructor(
         }
 
         registryDao.insertAll(
-            reminders.map {
+            validReminders.map {
                 AlarmRegistryEntity(
                     reminderId = it.id,
                     taskId = it.taskId,
@@ -147,11 +154,24 @@ class AlarmManagerRegistrar @Inject constructor(
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
             registryDao.deleteByReminder(reminder.id)
         }
     }
 
     override suspend fun cancelForTask(taskId: String) {
+        val registered = registryDao.getForTask(taskId)
+        registered.forEach { entry ->
+            val intent = Intent(context, OrkaAlarmReceiver::class.java).apply { action = ORKA_ALARM_ACTION }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                entry.alarmManagerId,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
         val reminders = taskRepository.observeReminders(taskId)
         val current = reminders.first()
         cancel(current)
@@ -221,66 +241,71 @@ class OrkaAlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val reminderId = intent.getStringExtra("reminder_id") ?: return
-        val reminderAndTask = kotlinx.coroutines.runBlocking {
-            val reminder = taskRepository.getReminder(reminderId)
-            val task = reminder?.taskId?.let { taskRepository.getTask(it) }
-            reminder to task
-        }
-        val notificationText = reminderAndTask.first?.reminderLabel
-            ?: reminderAndTask.second?.title
-            ?: "Task reminder triggered"
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val reminder = taskRepository.getReminder(reminderId)
+                val task = reminder?.taskId?.let { taskRepository.getTask(it) }
+                val notificationText = reminder?.reminderLabel
+                    ?: task?.title
+                    ?: "Task reminder triggered"
 
-        kotlinx.coroutines.runBlocking {
-            taskRepository.markReminderDelivered(reminderId, Instant.now())
-        }
-        val fullScreenIntent = Intent(ORKA_SHOW_ALARM_ACTION)
-            .setPackage(context.packageName)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra("reminder_id", reminderId)
+                taskRepository.markReminderDelivered(reminderId, Instant.now())
 
-        val pendingFullScreen = PendingIntent.getActivity(
-            context,
-            reminderId.hashCode(),
-            fullScreenIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val openAppIntent = PendingIntent.getActivity(
-            context,
-            reminderId.hashCode() + 1,
-            // Carries reminder_id so MainActivity can navigate straight to this task's detail
-            // screen — without it, tapping the notification body (the fallback path when the
-            // full-screen intent above gets refused by background-activity-start restrictions)
-            // just opened the app to whatever its default tab was, with no link back to the task
-            // the notification was actually about.
-            Intent(ORKA_OPEN_APP_ACTION).setPackage(context.packageName).putExtra("reminder_id", reminderId),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+                val fullScreenIntent = Intent(ORKA_SHOW_ALARM_ACTION)
+                    .setPackage(context.packageName)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .putExtra("reminder_id", reminderId)
 
-        val notification = NotificationCompat.Builder(context, ORKA_ALARM_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification_orka)
-            .setContentTitle("ORKA")
-            .setContentText(notificationText)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(false)
-            .setOngoing(true)
-            .setContentIntent(openAppIntent)
-            .setFullScreenIntent(pendingFullScreen, true)
-            .build()
+                val pendingFullScreen = PendingIntent.getActivity(
+                    context,
+                    reminderId.hashCode(),
+                    fullScreenIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+                val openAppIntent = PendingIntent.getActivity(
+                    context,
+                    reminderId.hashCode() + 1,
+                    // Carries reminder_id so MainActivity can navigate straight to this task's detail
+                    // screen — without it, tapping the notification body (the fallback path when the
+                    // full-screen intent above gets refused by background-activity-start restrictions)
+                    // just opened the app to whatever its default tab was, with no link back to the task
+                    // the notification was actually about.
+                    Intent(ORKA_OPEN_APP_ACTION).setPackage(context.packageName).putExtra("reminder_id", reminderId),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
 
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(reminderId.hashCode(), notification)
+                val notification = NotificationCompat.Builder(context, ORKA_ALARM_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification_orka)
+                    .setContentTitle("ORKA")
+                    .setContentText(notificationText)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_ALARM)
+                    .setAutoCancel(false)
+                    .setOngoing(true)
+                    .setContentIntent(openAppIntent)
+                    .setFullScreenIntent(pendingFullScreen, true)
+                    .build()
 
-        // setFullScreenIntent() above is the OS-sanctioned way to force this open, and is all
-        // that's needed while the device is locked. This direct call additionally forces it open
-        // when the screen is already unlocked (where the OS would otherwise only show a heads-up
-        // notification) — but background-activity-start restrictions (Android 10+) can refuse it
-        // in some states, so it must not be allowed to crash notification delivery, which already
-        // succeeded above.
-        try {
-            context.startActivity(fullScreenIntent)
-        } catch (e: SecurityException) {
-            e.printStackTrace()
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.notify(reminderId.hashCode(), notification)
+
+                // setFullScreenIntent() above is the OS-sanctioned way to force this open, and is all
+                // that's needed while the device is locked. This direct call additionally forces it open
+                // when the screen is already unlocked (where the OS would otherwise only show a heads-up
+                // notification) — but background-activity-start restrictions (Android 10+) can refuse it
+                // in some states, so it must not be allowed to crash notification delivery, which already
+                // succeeded above.
+                try {
+                    context.startActivity(fullScreenIntent)
+                } catch (t: Throwable) {
+                    t.printStackTrace()
+                }
+            } catch (t: Throwable) {
+                t.printStackTrace()
+            } finally {
+                pendingResult?.finish()
+            }
         }
     }
 }

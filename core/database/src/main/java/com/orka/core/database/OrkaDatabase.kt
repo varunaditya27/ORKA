@@ -9,6 +9,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
@@ -211,7 +212,7 @@ private fun splitEscaped(value: String, delimiter: Char): List<String> {
     return parts
 }
 
-@Entity(tableName = "tasks")
+@Entity(tableName = "tasks", indices = [Index(value = ["status", "deadline"])])
 data class TaskEntity(
     @PrimaryKey val id: String,
     val rawInput: String,
@@ -238,7 +239,13 @@ data class TaskEntity(
     val userCorrectedFields: Set<String>,
 )
 
-@Entity(tableName = "reminders", indices = [Index("taskId")])
+@Entity(
+    tableName = "reminders",
+    indices = [
+        Index("taskId"),
+        Index(value = ["status", "scheduledTime"]),
+    ],
+)
 data class ReminderEventEntity(
     @PrimaryKey val id: String,
     val taskId: String,
@@ -338,6 +345,12 @@ interface ReminderDao {
     @Query("DELETE FROM reminders WHERE taskId = :taskId AND status = 'SCHEDULED'")
     suspend fun deleteScheduledForTask(taskId: String)
 
+    @Transaction
+    suspend fun replaceScheduled(taskId: String, reminders: List<ReminderEventEntity>) {
+        deleteScheduledForTask(taskId)
+        insertAll(reminders)
+    }
+
     @Query("UPDATE reminders SET actualFireTime = :firedAt, status = 'FIRED' WHERE id = :reminderId")
     suspend fun markDelivered(reminderId: String, firedAt: Instant)
 
@@ -377,6 +390,9 @@ interface AlarmRegistryDao {
     @Query("SELECT * FROM alarm_registry")
     suspend fun getAll(): List<AlarmRegistryEntity>
 
+    @Query("SELECT * FROM alarm_registry WHERE taskId = :taskId")
+    suspend fun getForTask(taskId: String): List<AlarmRegistryEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(alarms: List<AlarmRegistryEntity>)
 
@@ -395,7 +411,7 @@ interface AlarmRegistryDao {
         BehaviorProfileEntity::class,
         AlarmRegistryEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(OrkaTypeConverters::class)
@@ -434,6 +450,13 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         db.execSQL("CREATE INDEX IF NOT EXISTS index_reminders_taskId ON reminders(taskId)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_interactions_taskId ON interactions(taskId)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_alarm_registry_taskId ON alarm_registry(taskId)")
+    }
+}
+
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_tasks_status_deadline ON tasks(status, deadline)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_reminders_status_scheduledTime ON reminders(status, scheduledTime)")
     }
 }
 

@@ -41,6 +41,7 @@ dependencies {
     testImplementation(projects.core.testing)
     testImplementation(libs.junit4)
     testImplementation(libs.truth)
+    testImplementation("org.mockito:mockito-core:5.11.0")
     androidTestImplementation(projects.core.testing)
     androidTestImplementation(libs.androidx.junit)
 }
